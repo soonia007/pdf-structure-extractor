@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pdfstruct"
+version = "0.1.0"
+description = "Read PDF files and convert their structure (text, headings, tables, images, links, forms) to JSON."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "pdfplumber>=0.11",
+    "pypdf>=4.0",
+    "pypdfium2>=4.0",
+    "pydantic>=2.5",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "reportlab>=4", "jsonschema>=4", "ruff>=0.5"]
+
+[project.scripts]
+pdfstruct = "pdfstruct.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+# Broad `except Exception` is deliberate: parser failures must be isolated, not propagated.
+select = ["E", "F", "W", "I", "UP", "B", "C4"]

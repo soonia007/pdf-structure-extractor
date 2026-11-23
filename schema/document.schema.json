@@ -1,0 +1,595 @@
+{
+  "$defs": {
+    "Annotation": {
+      "properties": {
+        "subtype": {
+          "title": "Subtype",
+          "type": "string"
+        },
+        "contents": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Contents"
+        },
+        "bbox": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BBox"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "subtype"
+      ],
+      "title": "Annotation",
+      "type": "object"
+    },
+    "BBox": {
+      "properties": {
+        "x0": {
+          "title": "X0",
+          "type": "number"
+        },
+        "top": {
+          "title": "Top",
+          "type": "number"
+        },
+        "x1": {
+          "title": "X1",
+          "type": "number"
+        },
+        "bottom": {
+          "title": "Bottom",
+          "type": "number"
+        }
+      },
+      "required": [
+        "x0",
+        "top",
+        "x1",
+        "bottom"
+      ],
+      "title": "BBox",
+      "type": "object"
+    },
+    "Extraction": {
+      "properties": {
+        "tool": {
+          "default": "pdfstruct",
+          "title": "Tool",
+          "type": "string"
+        },
+        "tool_version": {
+          "title": "Tool Version",
+          "type": "string"
+        },
+        "started_at": {
+          "title": "Started At",
+          "type": "string"
+        },
+        "duration_ms": {
+          "title": "Duration Ms",
+          "type": "integer"
+        },
+        "status": {
+          "enum": [
+            "ok",
+            "partial",
+            "failed"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "engines_used": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Engines Used",
+          "type": "array"
+        },
+        "pages_failed": {
+          "default": [],
+          "items": {
+            "type": "integer"
+          },
+          "title": "Pages Failed",
+          "type": "array"
+        }
+      },
+      "required": [
+        "tool_version",
+        "started_at",
+        "duration_ms",
+        "status"
+      ],
+      "title": "Extraction",
+      "type": "object"
+    },
+    "FormField": {
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "type": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Type"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Value"
+        }
+      },
+      "required": [
+        "name"
+      ],
+      "title": "FormField",
+      "type": "object"
+    },
+    "Image": {
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "bbox": {
+          "$ref": "#/$defs/BBox"
+        },
+        "width_px": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Width Px"
+        },
+        "height_px": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Height Px"
+        }
+      },
+      "required": [
+        "id",
+        "bbox"
+      ],
+      "title": "Image",
+      "type": "object"
+    },
+    "Link": {
+      "properties": {
+        "bbox": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BBox"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "uri": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Uri"
+        },
+        "dest_page": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Dest Page"
+        }
+      },
+      "title": "Link",
+      "type": "object"
+    },
+    "OutlineItem": {
+      "properties": {
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "level": {
+          "title": "Level",
+          "type": "integer"
+        },
+        "page": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Page"
+        }
+      },
+      "required": [
+        "title",
+        "level"
+      ],
+      "title": "OutlineItem",
+      "type": "object"
+    },
+    "Page": {
+      "properties": {
+        "number": {
+          "description": "1-based page number",
+          "title": "Number",
+          "type": "integer"
+        },
+        "width": {
+          "title": "Width",
+          "type": "number"
+        },
+        "height": {
+          "title": "Height",
+          "type": "number"
+        },
+        "rotation": {
+          "default": 0,
+          "title": "Rotation",
+          "type": "integer"
+        },
+        "engine": {
+          "description": "Engine that produced this page's text",
+          "title": "Engine",
+          "type": "string"
+        },
+        "text": {
+          "default": "",
+          "title": "Text",
+          "type": "string"
+        },
+        "char_count": {
+          "default": 0,
+          "title": "Char Count",
+          "type": "integer"
+        },
+        "needs_ocr": {
+          "default": false,
+          "description": "True if the page looks scanned / has no text layer",
+          "title": "Needs Ocr",
+          "type": "boolean"
+        },
+        "blocks": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/TextBlock"
+          },
+          "title": "Blocks",
+          "type": "array"
+        },
+        "tables": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/Table"
+          },
+          "title": "Tables",
+          "type": "array"
+        },
+        "images": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/Image"
+          },
+          "title": "Images",
+          "type": "array"
+        },
+        "links": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/Link"
+          },
+          "title": "Links",
+          "type": "array"
+        },
+        "annotations": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/Annotation"
+          },
+          "title": "Annotations",
+          "type": "array"
+        },
+        "warnings": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Warnings",
+          "type": "array"
+        }
+      },
+      "required": [
+        "number",
+        "width",
+        "height",
+        "engine"
+      ],
+      "title": "Page",
+      "type": "object"
+    },
+    "Source": {
+      "properties": {
+        "filename": {
+          "title": "Filename",
+          "type": "string"
+        },
+        "size_bytes": {
+          "title": "Size Bytes",
+          "type": "integer"
+        },
+        "sha256": {
+          "title": "Sha256",
+          "type": "string"
+        },
+        "pdf_version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Pdf Version"
+        },
+        "encrypted": {
+          "default": false,
+          "title": "Encrypted",
+          "type": "boolean"
+        },
+        "page_count": {
+          "default": 0,
+          "title": "Page Count",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "filename",
+        "size_bytes",
+        "sha256"
+      ],
+      "title": "Source",
+      "type": "object"
+    },
+    "Table": {
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "bbox": {
+          "$ref": "#/$defs/BBox"
+        },
+        "n_rows": {
+          "title": "N Rows",
+          "type": "integer"
+        },
+        "n_cols": {
+          "title": "N Cols",
+          "type": "integer"
+        },
+        "rows": {
+          "items": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "type": "array"
+          },
+          "title": "Rows",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "bbox",
+        "n_rows",
+        "n_cols",
+        "rows"
+      ],
+      "title": "Table",
+      "type": "object"
+    },
+    "TextBlock": {
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "type": {
+          "enum": [
+            "heading",
+            "paragraph",
+            "list_item",
+            "header",
+            "footer"
+          ],
+          "title": "Type",
+          "type": "string"
+        },
+        "text": {
+          "title": "Text",
+          "type": "string"
+        },
+        "bbox": {
+          "$ref": "#/$defs/BBox"
+        },
+        "font": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Font"
+        },
+        "font_size": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Font Size"
+        },
+        "bold": {
+          "default": false,
+          "title": "Bold",
+          "type": "boolean"
+        },
+        "heading_level": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "1 = largest heading",
+          "title": "Heading Level"
+        }
+      },
+      "required": [
+        "id",
+        "type",
+        "text",
+        "bbox"
+      ],
+      "title": "TextBlock",
+      "type": "object"
+    }
+  },
+  "properties": {
+    "schema_version": {
+      "default": "1.0.0",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "source": {
+      "$ref": "#/$defs/Source"
+    },
+    "metadata": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "default": {},
+      "title": "Metadata",
+      "type": "object"
+    },
+    "outline": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/OutlineItem"
+      },
+      "title": "Outline",
+      "type": "array"
+    },
+    "form_fields": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/FormField"
+      },
+      "title": "Form Fields",
+      "type": "array"
+    },
+    "pages": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/Page"
+      },
+      "title": "Pages",
+      "type": "array"
+    },
+    "warnings": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Warnings",
+      "type": "array"
+    },
+    "extraction": {
+      "$ref": "#/$defs/Extraction"
+    }
+  },
+  "required": [
+    "source",
+    "extraction"
+  ],
+  "title": "Document",
+  "type": "object"
+}
