@@ -71,6 +71,7 @@ const pct = (x) => Math.round(x * 100) + '%';
 const fold = (s) => String(s || '').replace(/\s+/g, '').toLowerCase();
 
 function statusOf(s) {
+  if (s.locked) return ['warn', 'ล็อกด้วยรหัสผ่าน'];
   if (s.error) return ['bad', 'อ่านไม่ได้'];
   if (s.status === 'failed') return ['bad', 'อ่านไม่ได้'];
   if (s.missing_required && s.missing_required.length) return ['warn', 'ขาดตัวแปรบังคับ'];
@@ -79,6 +80,59 @@ function statusOf(s) {
   return ['ok', 'สำเร็จ'];
 }
 const statusEl = (s) => { const [k, label] = statusOf(s); return h('span', { class: 'status ' + k }, label); };
+
+/* Ask for the password of locked PDFs. `locked` = document summaries with locked: true.
+   Resolves with the summaries that were unlocked. The password only goes to the
+   local app (kept in its memory until it closes); it is never saved. */
+function unlockDialog(locked, autoTemplate = true) {
+  if (!locked.length) return Promise.resolve([]);
+  return new Promise((resolve) => {
+    const unlocked = [];
+    const pending = new Map(locked.map((d) => [d.id, d]));
+    const pw = h('input', { class: 'input', id: 'pdf-pw', type: 'password', autocomplete: 'off', spellcheck: 'false', style: 'flex:1 1 220px' });
+    const show = h('input', { type: 'checkbox', style: 'width:18px;height:18px;accent-color:#1F4FC9',
+      onchange: (e) => { pw.type = e.target.checked ? 'text' : 'password'; } });
+    const all = h('input', { type: 'checkbox', checked: true, style: 'width:18px;height:18px;accent-color:#1F4FC9' });
+    const list = h('ul', { style: 'margin:0;padding-left:18px', 'aria-live': 'polite' });
+    const err = h('div', { class: 'note bad', hidden: true, role: 'alert' });
+    const submit = h('button', { class: 'btn primary', type: 'submit' }, 'ปลดล็อก');
+    function drawList() {
+      put(list, [...pending.values()].map((d) => h('li', {}, d.filename)),
+        unlocked.map((d) => h('li', { style: 'color:var(--ok-ink)' }, `${d.filename} ✓ ปลดล็อกแล้ว`)));
+    }
+    const form = h('form', { class: 'dlg', onsubmit: async (e) => {
+      e.preventDefault();
+      if (!pw.value) { err.hidden = false; err.textContent = 'กรอกรหัสผ่านก่อน'; return; }
+      submit.disabled = true; err.hidden = true;
+      const targets = all.checked ? [...pending.values()] : [pending.values().next().value];
+      const wrong = [];
+      for (const d of targets) {
+        try {
+          const r = await fetch(`/api/documents/${d.id}/unlock`, { method: 'POST', credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: pw.value, auto_template: autoTemplate }) });
+          const data = await r.json();
+          if (r.ok) { pending.delete(d.id); unlocked.push(data); } else wrong.push(`${d.filename}: ${data.message}`);
+        } catch (ex) { wrong.push(`${d.filename}: ${ex.message}`); }
+      }
+      pw.value = ''; submit.disabled = false; drawList();
+      if (!pending.size) { dlg.close(); return; }
+      err.hidden = !wrong.length; err.textContent = wrong.join(' · '); pw.focus();
+    } },
+    h('h2', { class: 'h', id: 'pw-title' }, 'ไฟล์ถูกล็อกด้วยรหัสผ่าน'),
+    h('p', { class: 'small muted', style: 'margin:0' }, 'ใส่รหัสผ่านสำหรับเปิดไฟล์ (user password) แอปจะเก็บรหัสไว้ในหน่วยความจำจนปิดแอปเท่านั้น ไม่บันทึกลงเครื่อง'),
+    list,
+    h('div', { class: 'row' }, h('label', { for: 'pdf-pw', class: 'sr' }, 'รหัสผ่าน PDF'), pw,
+      h('label', { class: 'check', style: 'min-height:40px' }, show, 'แสดงรหัส')),
+    locked.length > 1 ? h('label', { class: 'check' }, all, `ลองรหัสนี้กับทุกไฟล์ที่ล็อก (${locked.length} ไฟล์)`) : null,
+    err,
+    h('div', { class: 'row', style: 'justify-content:flex-end' },
+      h('button', { class: 'btn', type: 'button', onclick: () => dlg.close() }, 'ข้ามไปก่อน'), submit));
+    const dlg = h('dialog', { 'aria-labelledby': 'pw-title' }, form);
+    dlg.addEventListener('close', () => { dlg.remove(); resolve(unlocked); });
+    drawList();
+    document.body.append(dlg); dlg.showModal(); pw.focus();
+  });
+}
 
 async function uploadFiles(files, autoTemplate) {
   const results = [];
@@ -135,8 +189,14 @@ async function renderHome() {
     for (const f of files) pending.push(f.name);
     await refresh();
     try {
-      const res = await uploadFiles([...files], auto);
+      let res = await uploadFiles([...files], auto);
       toast(`อ่านเสร็จ ${res.length} ไฟล์`);
+      const locked = res.filter((r) => r.locked);
+      if (locked.length) {
+        pending.length = 0; await refresh();
+        const opened = await unlockDialog(locked, auto);
+        res = res.map((r) => opened.find((o) => o.id === r.id) || r);
+      }
       if (res.length === 1 && !res[0].error) location.hash = '#/doc/' + res[0].id;
     } catch (e) { toast('อัปโหลดไม่สำเร็จ: ' + e.message); }
     pending.length = 0;
@@ -163,12 +223,18 @@ async function renderHome() {
         h('td', {}, h('span', { class: 'status run' }, h('span', { class: 'spin', 'aria-hidden': 'true' }), ' กำลังอ่าน…')), h('td', {}))),
       ...docs.map((d) => h('tr', {},
         h('td', {}, h('div', { style: 'font-weight:600' }, d.filename),
-          h('div', { class: 'muted small' }, d.error ? d.error.message : `${d.page_count} หน้า · ${fmtSize(d.size_bytes)}`)),
+          h('div', { class: 'muted small' }, d.locked ? 'ไฟล์มีรหัสผ่าน กด "ใส่รหัสผ่าน" เพื่อเปิด' : d.error ? d.error.message : `${d.page_count} หน้า · ${fmtSize(d.size_bytes)}${d.encrypted ? ' · ปลดล็อกแล้ว' : ''}`)),
         h('td', {}, d.template ? h('span', { class: 'pill accent' }, `${d.template} · ${pct(d.template_score || 0)}`) : h('span', { class: 'pill' }, d.error ? '–' : 'ไม่ตรง Template')),
         h('td', {}, d.fields_total ? `${d.fields_found} / ${d.fields_total}` : '–'),
         h('td', {}, statusEl(d)),
         h('td', { style: 'text-align:right' },
-          d.error ? h('button', { class: 'btn sm danger', type: 'button', onclick: async () => { await api('DELETE', '/documents/' + d.id); refresh(); } }, 'ลบ')
+          d.locked ? h('span', { class: 'row', style: 'gap:6px;justify-content:flex-end' },
+            h('button', { class: 'btn sm primary', type: 'button', onclick: async () => {
+              const opened = await unlockDialog(docs.filter((x) => x.locked), auto);
+              if (opened.length === 1) location.hash = '#/doc/' + opened[0].id; else refresh();
+            } }, 'ใส่รหัสผ่าน'),
+            h('button', { class: 'btn sm danger', type: 'button', onclick: async () => { await api('DELETE', '/documents/' + d.id); refresh(); } }, 'ลบ'))
+          : d.error ? h('button', { class: 'btn sm danger', type: 'button', onclick: async () => { await api('DELETE', '/documents/' + d.id); refresh(); } }, 'ลบ')
             : h('a', { href: '#/doc/' + d.id, style: 'font-weight:600' }, d.template ? 'เปิดดู' : 'เปิดดู / สอน')))),
     ];
     put(tableBox, rows.length
@@ -317,6 +383,10 @@ async function exportDialog(id, filename) {
 async function renderViewer(id, startPage = 1) {
   const data = await api('GET', '/documents/' + id);
   const s = data.summary, doc = data.document;
+  if (!doc && s.locked) {
+    const opened = await unlockDialog([s]);
+    if (opened.length) return renderViewer(id, startPage);
+  }
   if (!doc) {
     put(view, h('a', { href: '#/', class: 'btn', style: 'align-self:flex-start' }, icon(I.back), 'กลับ'),
       h('h1', { style: 'margin:0' }, s.filename), h('div', { class: 'note bad' }, `${s.error.error}: ${s.error.message}`));
@@ -612,7 +682,11 @@ async function renderTeach(query) {
   more.addEventListener('change', async () => {
     try {
       const res = await uploadFiles([...more.files], false);
-      for (const r of res) { if (!r.error) { docs.unshift(r); chosen.add(r.id); } else toast(`${r.filename}: ${r.error.message}`); }
+      const opened = await unlockDialog(res.filter((r) => r.locked), false).catch(() => []);
+      for (const r0 of res) {
+        const r = opened.find((o) => o.id === r0.id) || r0;
+        if (!r.error) { docs.unshift(r); chosen.add(r.id); } else toast(`${r.filename}: ${r.locked ? 'ยังไม่ได้ใส่รหัสผ่าน' : r.error.message}`);
+      }
       drawSamples(); validate();
     } catch (e) { toast(e.message); }
   });

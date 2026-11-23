@@ -29,7 +29,7 @@ from typing import Any
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
 from .. import __version__, prompts
-from ..errors import PDFStructError
+from ..errors import EncryptedPDFError, PDFStructError
 from ..extractor import extract, extract_isolated
 from ..fields import FieldSpec, apply_spec, evaluate_field
 from ..models import Document
@@ -49,11 +49,24 @@ class DocEntry:
     doc: Document | None = None
     error: dict | None = None
     edits: dict[str, Any] = field(default_factory=dict)
+    # Kept in memory only (never written to disk or returned by the API), so a locked
+    # PDF can be re-opened for page images and cropped fields until the app closes.
+    password: str | None = field(default=None, repr=False)
+
+    @property
+    def locked(self) -> bool:
+        return bool(self.error and self.error.get("error") == "EncryptedPDFError")
 
     def summary(self) -> dict:
         d = self.doc
         if d is None:
-            return {"id": self.id, "filename": self.filename, "error": self.error, "added_at": self.added_at}
+            return {
+                "id": self.id,
+                "filename": self.filename,
+                "error": self.error,
+                "locked": self.locked,
+                "added_at": self.added_at,
+            }
         found = sum(1 for f in d.fields.values() if f.found)
         return {
             "id": self.id,
@@ -68,6 +81,8 @@ class DocEntry:
             "fields_found": found,
             "fields_total": len(d.fields),
             "missing_required": d.extraction.missing_required_fields,
+            "encrypted": d.source.encrypted,
+            "locked": False,
             "error": None,
         }
 
@@ -99,31 +114,43 @@ class AppState:
         shutil.rmtree(self.workdir, ignore_errors=True)
 
     # ------------------------------------------------------------------ #
-    def _extract(self, path: Path) -> Document:
+    def _extract(self, path: Path, password: str | None = None) -> Document:
         if self.isolate:
-            return extract_isolated(path, timeout=self.timeout)
-        return extract(path)
+            return extract_isolated(path, timeout=self.timeout, password=password)
+        return extract(path, password=password)
 
-    def add_document(self, filename: str, data: bytes, auto_template: bool) -> DocEntry:
+    def _process(self, entry: DocEntry, auto_template: bool, password: str | None = None) -> None:
+        doc = self._extract(entry.path, password)  # raises EncryptedPDFError for a missing/wrong password
+        doc.source.filename = entry.filename
+        if auto_template:
+            found = self.store.best(doc)
+            if found:
+                tpl, res = found
+                apply_spec(doc, tpl.spec, pdf_path=entry.path, password=password)
+                doc.extraction.template, doc.extraction.template_score = tpl.name, res.score
+        entry.doc, entry.error, entry.password = doc, None, password
+
+    def add_document(self, filename: str, data: bytes, auto_template: bool, password: str | None = None) -> DocEntry:
         doc_id = uuid.uuid4().hex
         safe = re.sub(r"[^\w.\-ก-๙ ]+", "_", Path(filename).name)[:120] or "document.pdf"
         path = self.workdir / f"{doc_id}.pdf"
         path.write_bytes(data)
         entry = DocEntry(id=doc_id, filename=safe, path=path, added_at=time.time())
         try:
-            doc = self._extract(path)
-            doc.source.filename = safe
-            if auto_template:
-                found = self.store.best(doc)
-                if found:
-                    tpl, res = found
-                    apply_spec(doc, tpl.spec, pdf_path=path)
-                    doc.extraction.template, doc.extraction.template_score = tpl.name, res.score
-            entry.doc = doc
+            self._process(entry, auto_template, password)
         except PDFStructError as exc:
             entry.error = {"error": type(exc).__name__, "message": str(exc)}
         with self.lock:
             self.docs[doc_id] = entry
+        return entry
+
+    def unlock(self, entry: DocEntry, password: str, auto_template: bool) -> DocEntry:
+        """Try a password on a locked document. Raises EncryptedPDFError if it is wrong."""
+        if not entry.locked:
+            raise ValueError("document is not locked")
+        if not password:
+            raise EncryptedPDFError("password is empty")
+        self._process(entry, auto_template, password)
         return entry
 
     def doc(self, doc_id: str) -> DocEntry:
@@ -154,7 +181,8 @@ class AppState:
                     test = Document.model_validate(d.model_dump())
                     test.fields = {}
                     test.extraction.missing_required_fields = []
-                    apply_spec(test, tpl.spec, pdf_path=self.docs[entry_id].path)
+                    src = self.docs[entry_id]
+                    apply_spec(test, tpl.spec, pdf_path=src.path, password=src.password)
                     checks.append(
                         {
                             "doc_id": entry_id,
@@ -203,10 +231,10 @@ def template_detail(t) -> dict:
     }
 
 
-def render_page_png(path: Path, page_no: int, scale: float) -> bytes:
+def render_page_png(path: Path, page_no: int, scale: float, password: str | None = None) -> bytes:
     import pypdfium2 as pdfium
 
-    pdf = pdfium.PdfDocument(str(path))
+    pdf = pdfium.PdfDocument(str(path), password=password)
     try:
         if not 1 <= page_no <= len(pdf):
             raise KeyError(page_no)
@@ -370,7 +398,7 @@ def make_handler(state: AppState, port_ref: list[int]):
                         raise KeyError("no document")
                     page_no = int(p[3].removesuffix(".png"))
                     scale = min(max(float(q.get("scale", ["1.5"])[0]), 0.5), 4.0)
-                    return self._send(200, render_page_png(entry.path, page_no, scale), "image/png")
+                    return self._send(200, render_page_png(entry.path, page_no, scale, entry.password), "image/png")
                 if method == "PUT" and p[2:] == ["edits"]:
                     edits = json.loads(self._body() or b"{}")
                     if not isinstance(edits, dict):
@@ -388,11 +416,19 @@ def make_handler(state: AppState, port_ref: list[int]):
                     tpl = state.store.load(name)
                     entry.doc.fields = {}
                     entry.doc.extraction.missing_required_fields = []
-                    apply_spec(entry.doc, tpl.spec, pdf_path=entry.path)
+                    apply_spec(entry.doc, tpl.spec, pdf_path=entry.path, password=entry.password)
                     result = next((r for r in state.store.match(entry.doc) if r.template == name), None)
                     entry.doc.extraction.template = name
                     entry.doc.extraction.template_score = result.score if result else None
                     entry.edits = {}
+                    return self._json(entry.summary())
+                if method == "POST" and p[2:] == ["unlock"]:
+                    body = json.loads(self._body() or b"{}")
+                    try:
+                        auto = body.get("auto_template", True) is not False
+                        state.unlock(entry, str(body.get("password") or ""), auto)
+                    except EncryptedPDFError:
+                        return self._json({"error": "EncryptedPDFError", "message": "รหัสผ่านไม่ถูกต้อง"}, 403)
                     return self._json(entry.summary())
                 if method == "POST" and p[2:] == ["region-preview"]:
                     body = json.loads(self._body() or b"{}")
@@ -404,7 +440,7 @@ def make_handler(state: AppState, port_ref: list[int]):
                     )
                     import pdfplumber
 
-                    with pdfplumber.open(str(entry.path)) as pdf:
+                    with pdfplumber.open(str(entry.path), password=entry.password or "") as pdf:
                         fv = evaluate_field(entry.doc, spec, pdf)
                     return self._json(fv.model_dump(mode="json"))
                 if method == "GET" and p[2:] == ["export"]:

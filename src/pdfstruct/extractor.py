@@ -613,7 +613,7 @@ def extract(
         ),
     )
     if loaded_spec is not None:
-        apply_spec(doc, loaded_spec, pdf_path=path)
+        apply_spec(doc, loaded_spec, pdf_path=path, password=password)
         doc.extraction.duration_ms = int((time.monotonic() - t0) * 1000)
     return doc
 

@@ -190,3 +190,33 @@ def test_export_formats_and_prompts(app, invoice_pdf):
 
     status, prompts, _ = call("GET", f"/api/documents/{doc_id}/prompts")
     assert status == 200 and len(prompts) == 7 and '"total": 5' in prompts[0]["text"]
+
+
+def test_locked_pdf_can_be_unlocked(app, encrypted_pdf):
+    state, call, _ = app
+    status, s, _ = upload(call, encrypted_pdf)
+    assert status == 201 and s["locked"] and s["error"]["error"] == "EncryptedPDFError"
+    doc_id = s["id"]
+
+    status, body, _ = call("POST", f"/api/documents/{doc_id}/unlock", {"password": "wrong"})
+    assert status == 403 and body["message"] == "รหัสผ่านไม่ถูกต้อง"
+    assert call("POST", f"/api/documents/{doc_id}/unlock", {"password": ""})[0] == 403
+    assert call("GET", "/api/documents")[1][0]["locked"]  # still locked
+
+    status, s, _ = call("POST", f"/api/documents/{doc_id}/unlock", {"password": "secret"})
+    assert status == 200 and not s["locked"] and s["encrypted"] and s["page_count"] == 2
+    assert "password" not in json.dumps(call("GET", f"/api/documents/{doc_id}")[1])  # never sent back
+    assert call("POST", f"/api/documents/{doc_id}/unlock", {"password": "secret"})[0] == 400  # not locked anymore
+
+    # everything that re-opens the file works with the remembered password
+    status, png, _ = call("GET", f"/api/documents/{doc_id}/pages/1.png?scale=1")
+    assert status == 200 and png[:4] == b"\x89PNG"
+    region = {"page": 1, "x0": 0.05, "top": 0.05, "x1": 0.95, "bottom": 0.2}
+    status, prev, _ = call("POST", f"/api/documents/{doc_id}/region-preview", {"region": region})
+    assert status == 200 and prev["found"]
+    status, _, _ = call(
+        "POST", "/api/templates/locked_tpl/fields", {"field": {"name": "top", "region": region}, "doc_id": doc_id}
+    )
+    assert status == 201
+    s = call("POST", f"/api/documents/{doc_id}/apply", {"template": "locked_tpl"})[1]
+    assert s["fields_found"] == 1

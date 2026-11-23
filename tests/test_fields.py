@@ -223,3 +223,9 @@ def test_region_needs_pdf(invoice_pdf):
 def test_invalid_regions(region):
     with pytest.raises(SpecError):
         load_spec({"fields": [{"name": "x", "region": region}]})
+
+
+def test_region_fields_on_encrypted_pdf(encrypted_pdf):
+    spec = {"fields": [{"name": "top", "region": {"page": 1, "x0": 0.05, "top": 0.05, "x1": 0.95, "bottom": 0.2}}]}
+    doc = extract(encrypted_pdf, password="secret", spec=spec)
+    assert doc.fields["top"].found  # the PDF is re-opened with the same password

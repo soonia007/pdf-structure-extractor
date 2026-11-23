@@ -561,7 +561,9 @@ def evaluate_field(doc: Document, spec: FieldSpec, pdf: Any = None) -> FieldValu
     return FieldValue(name=spec.name, found=False, value=spec.default, error=last_error)
 
 
-def apply_spec(doc: Document, spec: Spec, pdf_path: str | Path | None = None) -> Document:
+def apply_spec(
+    doc: Document, spec: Spec, pdf_path: str | Path | None = None, password: str | None = None
+) -> Document:
     """Fill ``doc.fields`` from the spec. Never raises for a missing value.
 
     ``pdf_path`` is needed for ``region`` fields (they read the PDF directly).
@@ -571,7 +573,7 @@ def apply_spec(doc: Document, spec: Spec, pdf_path: str | Path | None = None) ->
         import pdfplumber
 
         try:
-            pdf = pdfplumber.open(str(pdf_path))
+            pdf = pdfplumber.open(str(pdf_path), password=password or "")
         except Exception as exc:
             doc.warnings.append(f"region fields: cannot reopen PDF: {exc}")
     try:

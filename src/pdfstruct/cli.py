@@ -34,7 +34,7 @@ def _run_one(src: Path, args: argparse.Namespace) -> tuple[int, str]:
                 doc.warnings.append(f"no template matched (threshold {args.threshold})")
             else:
                 template, result = found
-                apply_spec(doc, template.spec, pdf_path=src)
+                apply_spec(doc, template.spec, pdf_path=src, password=args.password)
                 doc.extraction.template, doc.extraction.template_score = template.name, result.score
     except PDFStructError as exc:
         return EXIT_ERROR, json.dumps({"error": type(exc).__name__, "message": str(exc), "file": src.name})

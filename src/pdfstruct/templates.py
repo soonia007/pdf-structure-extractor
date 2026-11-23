@@ -744,7 +744,7 @@ def extract_auto(path: str | Path, store: TemplateStore, *, threshold: float = 0
         doc.warnings.append(f"no template matched (threshold {threshold})")
         return doc
     template, result = found
-    apply_spec(doc, template.spec, pdf_path=path)
+    apply_spec(doc, template.spec, pdf_path=path, password=kwargs.get("password"))
     doc.extraction.template = template.name
     doc.extraction.template_score = result.score
     return doc
