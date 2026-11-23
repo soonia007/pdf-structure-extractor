@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
-from .. import __version__, prompts
+from .. import __version__, export, prompts
 from ..errors import EncryptedPDFError, PDFStructError
 from ..extractor import extract, extract_isolated
 from ..fields import FieldSpec, apply_spec, evaluate_field
@@ -448,6 +448,19 @@ def make_handler(state: AppState, port_ref: list[int]):
                         raise ValueError("document could not be read")
                     fmt = q.get("format", ["full"])[0]
                     stem = quote(Path(entry.filename).stem)
+                    if fmt == "xlsx":
+                        body = export.xlsx_export(entry.doc, entry.edits)
+                        disp = f"attachment; filename*=UTF-8''{stem}.xlsx"
+                        xlsx = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                        return self._send(200, body, xlsx, {"Content-Disposition": disp})
+                    if fmt == "table-csv":
+                        tables = export.merged_tables(entry.doc)
+                        idx = int(q.get("table", ["1"])[0])
+                        if not 1 <= idx <= len(tables):
+                            raise KeyError("table")
+                        body = export.table_csv(tables[idx - 1]).encode("utf-8")
+                        disp = f"attachment; filename*=UTF-8''{stem}.table{idx}.csv"
+                        return self._send(200, body, "text/csv; charset=utf-8", {"Content-Disposition": disp})
                     if fmt == "csv":
                         body = prompts.csv_export(entry.doc, entry.edits).encode("utf-8")
                         disp = f"attachment; filename*=UTF-8''{stem}.csv"
@@ -457,9 +470,13 @@ def make_handler(state: AppState, port_ref: list[int]):
                         data = prompts.fields_export(entry.doc, entry.edits)
                         return self._json(data, extra={"Content-Disposition": disp})
                     if fmt != "full":
-                        raise ValueError("format must be full, fields or csv")
+                        raise ValueError("format must be full, fields, csv, xlsx or table-csv")
                     disp = f"attachment; filename*=UTF-8''{stem}.json"
                     return self._json(prompts.full_export(entry.doc, entry.edits), extra={"Content-Disposition": disp})
+                if method == "GET" and p[2:] == ["tables"]:
+                    if entry.doc is None:
+                        raise ValueError("document could not be read")
+                    return self._json(export.merged_tables(entry.doc))
                 if method == "GET" and p[2:] == ["prompts"]:
                     if entry.doc is None:
                         raise ValueError("document could not be read")

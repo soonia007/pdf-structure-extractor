@@ -30,6 +30,7 @@ from . import __version__, errors
 from .errors import EncryptedPDFError, ExtractionTimeout, NotAPDFError, UnreadablePDFError
 from .kv import find_text_tables
 from .layout import (
+    Line,
     Word,
     body_font_size,
     classify,
@@ -227,10 +228,78 @@ def _inside(word: dict, boxes: list[tuple[float, float, float, float]]) -> bool:
     return any(x0 <= cx <= x1 and t <= cy <= b for x0, t, x1, b in boxes)
 
 
+_NUMBER_CELL = re.compile(r"^[(\-+]?[\d๐-๙][\d๐-๙,]*(?:\.\d+)?\)?$")
+
+
+def _join_header(cell: str | None) -> str | None:
+    """Two-line header cells: "เวลา/\nวันที่มีผล" -> "เวลา/วันที่มีผล", "ยอดคงเหลือ\n(บาท)" -> "ยอดคงเหลือ (บาท)"."""
+    if cell is None:
+        return None
+    out = ""
+    for part in (p.strip() for p in cell.split("\n") if p.strip()):
+        out = part if not out else out + ("" if out.endswith(("/", "-")) else " ") + part
+    return out
+
+
+def _rows_from_text_lines(t: Any, rows: list, raw_words: list) -> list | None:
+    """Ruled tables with column lines but no lines between rows (bank statements, reports).
+
+    pdfplumber then returns one giant row whose cells hold many text lines.
+    Here the columns come from the ruling lines and the rows from the text
+    lines: every word goes to the column it sits in. A line with nothing in
+    the first column and no numbers continues the row above (wrapped text).
+    Returns None when the table does not look like that.
+    """
+    body = rows[1:] if len(rows) > 1 else rows
+    tallest = max((c.count("\n") + 1 for r in body for c in r if c), default=1)
+    if tallest < 3:
+        return None
+    columns = [c.bbox for c in t.columns]
+    if len(columns) < 2:
+        return None
+    x0, top, x1, bottom = t.bbox
+    body_top = t.rows[0].bbox[3] if len(rows) > 1 else top
+    words = []
+    for w in raw_words:
+        cy = (w["top"] + w["bottom"]) / 2
+        # a word belongs to the table if it starts inside it (long text may run past the right edge)
+        if x0 - 1 <= w["x0"] < x1 and body_top <= cy <= bottom and w["text"].strip():
+            words.append(
+                Word(
+                    text=normalize_text(w["text"]), x0=w["x0"], top=w["top"], x1=w["x1"], bottom=w["bottom"],
+                    font=w.get("fontname"), size=float(w.get("size") or 0),
+                )
+            )  # fmt: skip
+
+    def column_of(w: Word) -> int:
+        cx = (w.x0 + w.x1) / 2
+        for i, (cx0, _, cx1, _) in enumerate(columns):
+            if cx0 <= cx <= cx1:
+                return i
+        return min(range(len(columns)), key=lambda i: abs(cx - (columns[i][0] + columns[i][2]) / 2))
+
+    out: list[list[str | None]] = []
+    for line in group_lines(words):
+        parts: list[list[Word]] = [[] for _ in columns]
+        for w in line.words:
+            parts[column_of(w)].append(w)
+        cells = [normalize_text(Line(ws).text) or None if ws else None for ws in parts]
+        numeric = any(c and _NUMBER_CELL.match(c) for c in cells)
+        if out and not cells[0] and not numeric:  # wrapped text of the row above
+            out[-1] = [a if not b else (b if not a else f"{a} {b}") for a, b in zip(out[-1], cells, strict=True)]
+        else:
+            out.append(cells)
+    if len(out) < 2:
+        return None
+    header = [_join_header(c) for c in rows[0]] if len(rows) > 1 else None
+    return [header, *out] if header else out
+
+
 def _page_with_pdfplumber(pl_page: Any, number: int, with_tables: bool) -> tuple[Page, list]:
     warnings: list[str] = []
     tables: list[Table] = []
     table_boxes: list[tuple[float, float, float, float]] = []
+    raw_words = pl_page.extract_words(extra_attrs=["fontname", "size"], keep_blank_chars=False)
     if with_tables:
         try:
             for t in pl_page.find_tables():
@@ -238,11 +307,16 @@ def _page_with_pdfplumber(pl_page: Any, number: int, with_tables: bool) -> tuple
                 n_cols = max((len(r) for r in rows), default=0)
                 if len(rows) < 1 or n_cols < 2:
                     continue
+                strategy = "lines"
+                split = _rows_from_text_lines(t, rows, raw_words)
+                if split is not None:
+                    rows, strategy = split, "columns"
                 table_boxes.append(t.bbox)
                 tables.append(
                     Table(
                         id=f"p{number}-t{len(tables) + 1}",
                         bbox=BBox.of(*t.bbox),
+                        strategy=strategy,
                         n_rows=len(rows),
                         n_cols=n_cols,
                         rows=rows,
@@ -251,7 +325,6 @@ def _page_with_pdfplumber(pl_page: Any, number: int, with_tables: bool) -> tuple
         except Exception as exc:
             warnings.append(f"tables: {_short(exc)}")
 
-    raw_words = pl_page.extract_words(extra_attrs=["fontname", "size"], keep_blank_chars=False)
     words = [
         Word(
             text=normalize_text(w["text"]),

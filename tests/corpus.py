@@ -201,3 +201,62 @@ def scanned_copy(src: Path, dst: Path, dpi: int = 200) -> Path:
     images[0].save(buf, format="PDF", save_all=True, append_images=images[1:], resolution=dpi)
     dst.write_bytes(buf.getvalue())
     return dst
+
+
+# --------------------------------------------------------------------------- #
+# 5. Bank statement: ruled box + column lines but NO lines between rows,
+#    two-line Thai headers, empty cells, header repeated on every page.
+# --------------------------------------------------------------------------- #
+STATEMENT_HEADER = ["วันที่", "เวลา/\nวันที่มีผล", "รายการ", "ถอนเงิน / ฝากเงิน", "ยอดคงเหลือ\n(บาท)", "ช่องทาง", "รายละเอียด"]
+_COLS = [20, 66, 104, 160, 236, 306, 405, 585]
+
+
+def statement_rows(n: int) -> list[list[str]]:
+    channels = ["Internet/Mobile KTB", "K PLUS", "Internet/Mobile SCB", "MAKE by KBank", "Internet/Mobile BBL"]
+    names = ["น.ส. จิรชยา จิตร++", "นางสาว กมลพัชร นววว++", "MR KITJA HANSAKULS++", "นาย นรัตน์ มีล++", "MS MARISA NAKKHAR++"]
+    rows = [["06-11-26", "", "ยอดยกมา", "", "78,397.73", "", ""]]
+    balance = 7839773
+    for i in range(n - 1):
+        amount = 49900 + (i * 37 % 20) * 10000
+        balance += amount
+        day = 6 + (i // 20)
+        rows.append([
+            f"{day:02d}-11-26", f"{(12 + i // 3) % 24:02d}:{(i * 7) % 60:02d}", "รับโอนเงิน",
+            f"{amount / 100:,.2f}", f"{balance / 100:,.2f}", channels[i % 5], f"จาก X{1000 + i * 7} {names[i % 5]}",
+        ])  # fmt: skip
+    return rows
+
+
+def bank_statement(path: Path, n_rows: int = 60, per_page: int = 28) -> tuple[Path, list[list[str]]]:
+    if not _thai_fonts():
+        raise RuntimeError("Thai font missing")
+    rows = statement_rows(n_rows)
+    c = canvas.Canvas(str(path), pagesize=A4)
+    for start in range(0, len(rows), per_page):
+        chunk = rows[start : start + per_page]
+        top, head_h, row_h = 60, 30, 20
+        _text(c, 20, 40, "รายการเดินบัญชี (Statement)", "TH-Bold", 13)
+        bottom = top + head_h + row_h * len(chunk) + 4
+        c.rect(_COLS[0], H - bottom, _COLS[-1] - _COLS[0], bottom - top)  # outer box
+        for x in _COLS[1:-1]:
+            c.line(x, H - top, x, H - bottom)  # column lines, no row lines
+        c.line(_COLS[0], H - top - head_h, _COLS[-1], H - top - head_h)  # under the header only
+        for col, label in enumerate(STATEMENT_HEADER):
+            parts = label.split("\n")
+            for k, part in enumerate(parts):
+                y = top + 13 + k * 11 - (0 if len(parts) > 1 else -5)
+                c.setFont("TH-Bold", 9)
+                c.drawCentredString((_COLS[col] + _COLS[col + 1]) / 2, H - y, part)
+        for r, row in enumerate(chunk):
+            y = top + head_h + 14 + r * row_h
+            for col, cell in enumerate(row):
+                if not cell:
+                    continue
+                if col in (3, 4):
+                    _right(c, _COLS[col + 1] - 4, y, cell, "TH", 9)
+                else:
+                    _text(c, _COLS[col] + 3, y, cell, "TH", 9)
+        c.showPage()
+    c.save()
+    header = [h.replace("/\n", "/").replace("\n", " ") for h in STATEMENT_HEADER]
+    return path, [header, *rows]

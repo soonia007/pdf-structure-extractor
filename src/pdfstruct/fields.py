@@ -561,9 +561,7 @@ def evaluate_field(doc: Document, spec: FieldSpec, pdf: Any = None) -> FieldValu
     return FieldValue(name=spec.name, found=False, value=spec.default, error=last_error)
 
 
-def apply_spec(
-    doc: Document, spec: Spec, pdf_path: str | Path | None = None, password: str | None = None
-) -> Document:
+def apply_spec(doc: Document, spec: Spec, pdf_path: str | Path | None = None, password: str | None = None) -> Document:
     """Fill ``doc.fields`` from the spec. Never raises for a missing value.
 
     ``pdf_path`` is needed for ``region`` fields (they read the PDF directly).

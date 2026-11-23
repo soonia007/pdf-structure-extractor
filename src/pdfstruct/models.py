@@ -55,8 +55,9 @@ class TextLine(BaseModel):
 class Table(BaseModel):
     id: str
     bbox: BBox
-    strategy: Literal["lines", "text"] = Field(
-        default="lines", description="ruled table, or aligned text without lines"
+    strategy: Literal["lines", "text", "columns"] = Field(
+        default="lines",
+        description="lines: ruled cells; columns: ruled columns with rows taken from text lines; text: no lines",
     )
     n_rows: int
     n_cols: int

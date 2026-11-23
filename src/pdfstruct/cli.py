@@ -38,6 +38,12 @@ def _run_one(src: Path, args: argparse.Namespace) -> tuple[int, str]:
                 doc.extraction.template, doc.extraction.template_score = template.name, result.score
     except PDFStructError as exc:
         return EXIT_ERROR, json.dumps({"error": type(exc).__name__, "message": str(exc), "file": src.name})
+    if args.excel:
+        from .export import xlsx_export
+
+        target = args.excel / f"{src.stem}.xlsx" if args.input.is_dir() else args.excel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(xlsx_export(doc))
     ok = doc.extraction.status == "ok" and not doc.extraction.missing_required_fields
     code = EXIT_OK if ok else EXIT_PARTIAL
     indent = 2 if args.pretty else None
@@ -140,6 +146,12 @@ def main(argv: list[str] | None = None) -> int:
         "--prompt",
         choices=PROMPT_IDS,
         help="print a ready-made AI prompt with this document's data instead of JSON",
+    )
+    p.add_argument(
+        "--excel",
+        type=Path,
+        metavar="PATH",
+        help="also write an Excel workbook (tables merged across pages, typed numbers); a folder for batch input",
     )
     p.add_argument("--pretty", action="store_true", help="indent the JSON output")
     p.add_argument("--compact", action="store_true", help="omit null fields")

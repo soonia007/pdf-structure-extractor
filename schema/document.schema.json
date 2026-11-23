@@ -598,10 +598,11 @@
         },
         "strategy": {
           "default": "lines",
-          "description": "ruled table, or aligned text without lines",
+          "description": "lines: ruled cells; columns: ruled columns with rows taken from text lines; text: no lines",
           "enum": [
             "lines",
-            "text"
+            "text",
+            "columns"
           ],
           "title": "Strategy",
           "type": "string"

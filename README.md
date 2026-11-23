@@ -48,6 +48,9 @@ pdfstruct secret.pdf --password 1234
 # Prompt สำเร็จรูปสำหรับนำข้อมูลไปใช้กับ AI (summary / validate / spreadsheet / database / code / qa / map)
 pdfstruct invoice.pdf --auto-template --prompt validate
 
+# ทุกตาราง (รวมข้ามหน้าแล้ว) เป็นไฟล์ Excel
+pdfstruct statement.pdf --excel statement.xlsx -o statement.json
+
 # ดึงเฉพาะตัวแปรที่ต้องการ (กำหนดใน spec)
 pdfstruct invoice.pdf --spec examples/invoice.yaml --fields-only --pretty
 
@@ -157,6 +160,7 @@ src/pdfstruct/
   prompts.py     # ส่งออก JSON/CSV และ Prompt สำเร็จรูปสำหรับ AI
   kv.py          # หาป้าย/ค่าจากตำแหน่งบนหน้า, ตารางไม่มีเส้น
   ocr.py         # OCR หน้าสแกนด้วย Tesseract
+  export.py      # รวมตารางข้ามหน้า, ส่งออก Excel/CSV แบบกำหนดชนิดข้อมูลตายตัว
   app/           # แอปบนเครื่อง: server.py (API ภายในเครื่อง), desktop.py (หน้าต่าง), static/ (UI)
 packaging/       # build แอปด้วย PyInstaller
   models.py      # JSON model (pydantic) = schema

@@ -335,6 +335,34 @@ async function copyText(text, area) {
   try { area.focus(); area.select(); return document.execCommand('copy'); } catch { return false; }
 }
 
+const AMOUNT_RE = /^\(?[-+]?\d{1,3}(,\d{3})*(\.\d+)?\)?$|^\(?[-+]?\d+(\.\d+)?\)?$/;
+
+function tableDialog(id, t) {
+  const LIMIT = 1000;
+  const rows = t.rows.slice(0, LIMIT);
+  const numericCol = t.header.map((_, c) => {
+    const vals = t.rows.map((r) => r[c]).filter((v) => v);
+    return vals.length > 0 && vals.every((v) => AMOUNT_RE.test(String(v).trim()));
+  });
+  const table = h('table', { class: 't small', style: 'min-width:100%' },
+    h('thead', {}, h('tr', {}, h('th', { scope: 'col', class: 'muted' }, '#'),
+      t.header.map((c, i) => h('th', { scope: 'col', style: numericCol[i] ? 'text-align:right' : '' }, c || `คอลัมน์ ${i + 1}`)))),
+    h('tbody', {}, rows.map((r, ri) => h('tr', {}, h('td', { class: 'muted' }, ri + 1),
+      t.header.map((_, c) => h('td', { style: numericCol[c] ? 'text-align:right;white-space:nowrap' : '' }, r[c] ?? ''))))));
+  const dlg = h('dialog', { class: 'wide', 'aria-labelledby': 'tv-title' }, h('div', { class: 'dlg' },
+    h('div', { class: 'row', style: 'justify-content:space-between' },
+      h('div', {}, h('h2', { class: 'h', id: 'tv-title' }, `${t.title} · ${t.span}`),
+        h('div', { class: 'small muted' }, `${t.n_rows.toLocaleString()} แถว × ${t.n_cols} คอลัมน์` +
+          (t.pages.length > 1 ? ` · รวมจาก ${t.pages.length} หน้าแล้ว` : '') + (t.n_rows > LIMIT ? ` · แสดง ${LIMIT} แถวแรก (ไฟล์ส่งออกมีครบ)` : ''))),
+      h('div', { class: 'row' },
+        h('a', { class: 'btn primary', href: `/api/documents/${id}/export?format=xlsx`, download: '' }, 'Excel (.xlsx)'),
+        h('a', { class: 'btn', href: `/api/documents/${id}/export?format=table-csv&table=${t.index}`, download: '' }, 'CSV'),
+        h('button', { class: 'btn', type: 'button', onclick: () => dlg.close() }, 'ปิด'))),
+    h('div', { class: 'table-wrap tv' }, table)));
+  dlg.addEventListener('close', () => dlg.remove());
+  document.body.append(dlg); dlg.showModal();
+}
+
 async function exportDialog(id, filename) {
   const base = `/api/documents/${id}/export`;
   const dl = (fmt, title, desc) => h('a', { class: 'card', href: `${base}?format=${fmt}`, download: '',
@@ -348,6 +376,7 @@ async function exportDialog(id, filename) {
       h('button', { class: 'btn sm', type: 'button', onclick: () => dlg.close() }, 'ปิด')),
     h('h3', { class: 'lbl', style: 'margin:4px 0 0' }, '1. ดาวน์โหลดไฟล์'),
     h('div', { class: 'row', style: 'align-items:stretch' },
+      dl('xlsx', 'Excel (.xlsx)', 'ทุกตารางเป็นแถว/คอลัมน์ (รวมข้ามหน้าแล้ว) + ตัวแปร ตัวเลขรวมยอดได้ทันที'),
       dl('full', 'JSON เต็ม', 'โครงสร้างทั้งหมด: ข้อความ บล็อก ตาราง ตำแหน่ง และตัวแปร'),
       dl('fields', 'JSON เฉพาะตัวแปร', 'สั้น อ่านง่าย เหมาะส่งให้ระบบอื่นหรือ AI'),
       dl('csv', 'CSV (Excel)', 'ตัวแปรเป็นแถว เปิดใน Excel ได้ภาษาไทยถูกต้อง')),
@@ -573,7 +602,8 @@ async function renderViewer(id, startPage = 1) {
   }
 
   function drawSide() {
-    const tabs = [['fields', 'ตัวแปร'], ['structure', 'โครงสร้าง'], ['json', 'JSON']];
+    const nTables = doc.pages.reduce((n, p) => n + p.tables.length, 0);
+    const tabs = [['fields', 'ตัวแปร'], ['tables', `ตาราง${nTables ? ` (${st.tables ? st.tables.length : nTables})` : ''}`], ['structure', 'โครงสร้าง'], ['json', 'JSON']];
     const tablist = h('div', { class: 'tabs', role: 'tablist', 'aria-label': 'มุมมองผลลัพธ์' },
       tabs.map(([k, label]) => h('button', { type: 'button', role: 'tab', 'aria-selected': String(st.tab === k), onclick: () => { st.tab = k; drawSide(); } }, label)));
     let panel;
@@ -592,6 +622,29 @@ async function renderViewer(id, startPage = 1) {
         entries.length ? h('button', { class: 'btn', type: 'button', onclick: async () => {
           await api('PUT', `/documents/${id}/edits`, st.edits); toast('บันทึกการแก้ไขแล้ว (มีผลกับไฟล์ JSON ที่ส่งออก)');
         } }, 'บันทึกการแก้ไข') : null);
+    } else if (st.tab === 'tables') {
+      if (!st.tables) {
+        panel = h('div', { class: 'tabpanel muted' }, 'กำลังโหลดตาราง…');
+        api('GET', `/documents/${id}/tables`).then((t) => { st.tables = t; drawSide(); }).catch((e) => toast(e.message));
+      } else if (!st.tables.length) {
+        panel = h('div', { class: 'tabpanel' }, h('div', { class: 'note' }, 'ไม่พบตารางในเอกสารนี้ ถ้ามีตารางที่ระบบหาไม่เจอ ใช้ "ครอปตัวแปร" แล้วเลือกชนิด "ตาราง" ได้'));
+      } else {
+        panel = h('div', { class: 'tabpanel' },
+          h('div', { class: 'row', style: 'justify-content:space-between' },
+            h('span', { class: 'small muted' }, `${st.tables.length} ตาราง · ตารางที่ต่อหลายหน้ารวมเป็นตารางเดียวแล้ว`),
+            h('a', { class: 'btn sm primary', href: `/api/documents/${id}/export?format=xlsx`, download: '' }, 'Excel ทุกตาราง')),
+          st.tables.map((t) => h('div', { class: 'fcard' },
+            h('div', { class: 'row', style: 'justify-content:space-between' },
+              h('b', {}, `${t.title} · ${t.span}`),
+              h('span', { class: 'pill' + (t.strategy === 'lines' ? '' : ' table') }, t.strategy === 'columns' ? 'แยกแถวจากข้อความ' : t.strategy === 'text' ? 'ไม่มีเส้น' : 'มีเส้น')),
+            h('div', { class: 'small muted' }, `${t.n_rows.toLocaleString()} แถว × ${t.n_cols} คอลัมน์: ${t.header.filter(Boolean).join(' | ')}`),
+            h('div', { class: 'table-wrap' }, h('table', { class: 't small' },
+              h('thead', {}, h('tr', {}, t.header.map((c) => h('th', { scope: 'col' }, c || '')))),
+              h('tbody', {}, t.rows.slice(0, 3).map((r) => h('tr', {}, t.header.map((_, c) => h('td', { style: 'white-space:nowrap' }, r[c] ?? ''))))))),
+            h('div', { class: 'row' },
+              h('button', { class: 'btn sm', type: 'button', onclick: () => tableDialog(id, t) }, 'ดูตาราง'),
+              h('a', { class: 'btn sm', href: `/api/documents/${id}/export?format=table-csv&table=${t.index}`, download: '' }, 'CSV')))));
+      }
     } else if (st.tab === 'structure') {
       const page = doc.pages[st.page - 1];
       const warns = [...doc.warnings, ...page.warnings];

@@ -220,3 +220,16 @@ def test_locked_pdf_can_be_unlocked(app, encrypted_pdf):
     assert status == 201
     s = call("POST", f"/api/documents/{doc_id}/apply", {"template": "locked_tpl"})[1]
     assert s["fields_found"] == 1
+
+
+def test_tables_and_excel_endpoints(app, sample_pdf):
+    _, call, _ = app
+    doc_id = upload(call, sample_pdf, auto=0)[1]["id"]
+    status, tables, _ = call("GET", f"/api/documents/{doc_id}/tables")
+    assert status == 200 and tables[0]["header"] == ["Item", "Qty", "Price"] and tables[0]["n_rows"] == 2
+    status, body, res = call("GET", f"/api/documents/{doc_id}/export?format=xlsx")
+    assert status == 200 and "spreadsheetml" in res.getheader("Content-Type") and body[:2] == b"PK"
+    assert ".xlsx" in res.getheader("Content-Disposition")
+    status, body, _ = call("GET", f"/api/documents/{doc_id}/export?format=table-csv&table=1")
+    assert status == 200 and body.decode("utf-8-sig").startswith("Item,Qty,Price")
+    assert call("GET", f"/api/documents/{doc_id}/export?format=table-csv&table=9")[0] == 404
