@@ -1,0 +1,44 @@
+# ตัวอย่าง spec: กำหนดตัวแปรที่ต้องการจากใบแจ้งหนี้ / ใบกำกับภาษี
+# ใช้: pdfstruct invoice.pdf --spec examples/invoice.yaml --fields-only --pretty
+version: 1
+
+# (ไม่บังคับ) เลือกส่วนของ JSON โครงสร้างที่จะส่งออกด้วย; ไม่ใส่ = ส่งออกทั้งหมด
+include: [metadata, pages.tables]
+
+fields:
+  - name: invoice_no
+    description: เลขที่ใบกำกับ
+    label: ["Invoice No", "เลขที่"]       # หาป้ายข้อความนี้ แล้วเอาค่าที่อยู่ข้างๆ/บรรทัดถัดไป
+    pattern: '[A-Z]+-[\d-]+'              # ค่าต้องตรงรูปแบบนี้
+    required: true
+
+  - name: issue_date
+    type: date                            # แปลงเป็น YYYY-MM-DD (รองรับ พ.ศ. และชื่อเดือนไทย)
+    label: ["Date", "วันที่"]
+
+  - name: tax_id
+    description: เลขผู้เสียภาษี 13 หลัก
+    regex: '\b(\d{13})\b'                 # ค้นทั้งเอกสาร (group 1 = ค่า)
+
+  - name: customer
+    label: ["Customer", "ลูกค้า"]
+
+  - name: total
+    type: number                          # "1,236.50 บาท" -> 1236.5
+    label: ["Grand Total", "ยอดรวมทั้งสิ้น", "ยอดรวม"]
+    required: true
+
+  - name: items
+    type: table                           # หาตารางจากหัวคอลัมน์ (ต่อหลายหน้าได้)
+    columns:
+      Item: name
+      Qty: { key: qty, type: integer }
+      Unit Price: { key: unit_price, type: number }
+      Amount: { key: amount, type: number }
+
+  - name: title
+    source: metadata.Title                # ดึงจากผลลัพธ์ที่มีอยู่แล้วโดยตรง
+
+  - name: po_number
+    label: "PO Number"
+    default: "N/A"                        # ค่าเมื่อหาไม่เจอ

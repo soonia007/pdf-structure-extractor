@@ -85,3 +85,62 @@ def blank_pdf(tmp_path_factory) -> Path:
     with open(path, "wb") as fh:
         writer.write(fh)
     return path
+
+
+THAI_FONT = Path("/usr/share/fonts/truetype/freefont/FreeSerif.ttf")
+
+
+def _invoice(path: Path, font: str, lines_top: list[str], header: list[str], rows: list[list[str]], total: str):
+    styles = getSampleStyleSheet()
+    body = styles["BodyText"].clone("b", fontName=font, fontSize=11, leading=15)
+    title = styles["Heading1"].clone("h", fontName=font)
+    table = Table([header, *rows])
+    table.setStyle(TableStyle([("GRID", (0, 0), (-1, -1), 0.5, colors.black), ("FONTNAME", (0, 0), (-1, -1), font)]))
+    story = [Paragraph(lines_top[0], title)]
+    story += [Paragraph(t, body) for t in lines_top[1:]]
+    story += [Spacer(1, 10), table, Spacer(1, 10), Paragraph(total, body)]
+    SimpleDocTemplate(str(path), pagesize=A4, title="Invoice").build(story)
+    return path
+
+
+@pytest.fixture(scope="session")
+def invoice_pdf(tmp_path_factory) -> Path:
+    return _invoice(
+        tmp_path_factory.mktemp("pdf") / "invoice.pdf",
+        "Helvetica",
+        [
+            "INVOICE",
+            "Invoice No: INV-2026-001",
+            "Date: 15/03/2026",
+            "Tax ID: 0105556123456",
+            "Customer:",
+            "Somchai Trading Co., Ltd.",
+            "Paid: yes",
+        ],
+        ["Item", "Qty", "Unit Price", "Amount"],
+        [["Widget A", "2", "100.00", "200.00"], ["Widget B", "3", "345.50", "1,036.50"]],
+        "Grand Total: 1,236.50 THB",
+    )
+
+
+@pytest.fixture(scope="session")
+def thai_invoice_pdf(tmp_path_factory) -> Path:
+    if not THAI_FONT.exists():
+        pytest.skip("Thai-capable font not installed")
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+
+    pdfmetrics.registerFont(TTFont("ThaiFont", str(THAI_FONT)))
+    return _invoice(
+        tmp_path_factory.mktemp("pdf") / "thai_invoice.pdf",
+        "ThaiFont",
+        [
+            "ใบกำกับภาษี",
+            "เลขที่: TX-0042",
+            "วันที่ 5 มีนาคม 2569",
+            "เลขประจำตัวผู้เสียภาษี 0105556123456",
+        ],
+        ["รายการ", "จำนวน", "ราคา"],
+        [["สินค้า ก", "1", "500.00"], ["สินค้า ข", "4", "125.25"]],
+        "ยอดรวมทั้งสิ้น 1,001.00 บาท",
+    )

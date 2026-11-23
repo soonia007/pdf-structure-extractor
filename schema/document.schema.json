@@ -107,6 +107,14 @@
           },
           "title": "Pages Failed",
           "type": "array"
+        },
+        "missing_required_fields": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Missing Required Fields",
+          "type": "array"
         }
       },
       "required": [
@@ -116,6 +124,79 @@
         "status"
       ],
       "title": "Extraction",
+      "type": "object"
+    },
+    "FieldValue": {
+      "description": "A user-requested variable (see docs/FIELDS.md).",
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "found": {
+          "title": "Found",
+          "type": "boolean"
+        },
+        "value": {
+          "default": null,
+          "title": "Value"
+        },
+        "raw": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "text the value was parsed from",
+          "title": "Raw"
+        },
+        "page": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Page"
+        },
+        "method": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "how it was located, e.g. label:same-line, regex, table",
+          "title": "Method"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error"
+        }
+      },
+      "required": [
+        "name",
+        "found"
+      ],
+      "title": "FieldValue",
       "type": "object"
     },
     "FormField": {
@@ -535,7 +616,7 @@
   },
   "properties": {
     "schema_version": {
-      "default": "1.0.0",
+      "default": "1.1.0",
       "title": "Schema Version",
       "type": "string"
     },
@@ -565,6 +646,15 @@
       },
       "title": "Form Fields",
       "type": "array"
+    },
+    "fields": {
+      "additionalProperties": {
+        "$ref": "#/$defs/FieldValue"
+      },
+      "default": {},
+      "description": "variables requested by a spec file",
+      "title": "Fields",
+      "type": "object"
     },
     "pages": {
       "default": [],

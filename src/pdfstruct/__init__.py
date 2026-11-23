@@ -2,15 +2,17 @@
 
 __version__ = "0.1.0"
 
-from .errors import (  # noqa: E402
+from .errors import (
     EncryptedPDFError,
     ExtractionTimeout,
     NotAPDFError,
     PDFStructError,
+    SpecError,
     UnreadablePDFError,
 )
-from .extractor import extract, extract_isolated  # noqa: E402
-from .models import SCHEMA_VERSION, Document  # noqa: E402
+from .extractor import extract, extract_isolated
+from .fields import Spec, load_spec
+from .models import SCHEMA_VERSION, Document
 
 __all__ = [
     "Document",
@@ -18,9 +20,12 @@ __all__ = [
     "ExtractionTimeout",
     "NotAPDFError",
     "PDFStructError",
+    "Spec",
+    "SpecError",
     "SCHEMA_VERSION",
     "UnreadablePDFError",
     "__version__",
     "extract",
     "extract_isolated",
+    "load_spec",
 ]

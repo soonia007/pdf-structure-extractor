@@ -16,3 +16,7 @@ class UnreadablePDFError(PDFStructError):
 
 class ExtractionTimeout(PDFStructError):
     pass
+
+
+class SpecError(PDFStructError):
+    """The field spec file is invalid."""

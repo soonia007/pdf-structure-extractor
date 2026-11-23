@@ -4,6 +4,7 @@ import jsonschema
 import pytest
 
 from pdfstruct import (
+    SCHEMA_VERSION,
     Document,
     EncryptedPDFError,
     NotAPDFError,
@@ -122,7 +123,7 @@ def test_cli(sample_pdf, tmp_path, capsys):
     out = tmp_path / "out.json"
     assert main([str(sample_pdf), "-o", str(out), "--pretty"]) == 0
     data = json.loads(out.read_text())
-    assert data["schema_version"] == "1.0.0"
+    assert data["schema_version"] == SCHEMA_VERSION
     assert main(["--schema"]) == 0
 
 
@@ -136,3 +137,21 @@ def test_committed_schema_is_up_to_date():
 
     committed = json.loads((Path(__file__).parents[1] / "schema" / "document.schema.json").read_text())
     assert committed == Document.model_json_schema(), "run: pdfstruct --schema > schema/document.schema.json"
+
+
+def test_isolated_propagates_errors(tmp_path, encrypted_pdf):
+    from pdfstruct import EncryptedPDFError, NotAPDFError
+
+    f = tmp_path / "fake.pdf"
+    f.write_text("hello")
+    with pytest.raises(NotAPDFError):
+        extract_isolated(f, timeout=60)
+    with pytest.raises(EncryptedPDFError):
+        extract_isolated(encrypted_pdf, timeout=60)
+
+
+def test_isolated_timeout(sample_pdf):
+    from pdfstruct import ExtractionTimeout
+
+    with pytest.raises(ExtractionTimeout):
+        extract_isolated(sample_pdf, timeout=0.01)

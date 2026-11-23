@@ -6,11 +6,11 @@ TOP-LEFT of the page (y grows downward), which is what most consumers expect.
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-SCHEMA_VERSION = "1.0.0"
+SCHEMA_VERSION = "1.1.0"
 
 BlockType = Literal["heading", "paragraph", "list_item", "header", "footer"]
 Status = Literal["ok", "partial", "failed"]
@@ -94,6 +94,18 @@ class FormField(BaseModel):
     value: str | None = None
 
 
+class FieldValue(BaseModel):
+    """A user-requested variable (see docs/FIELDS.md)."""
+
+    name: str
+    found: bool
+    value: Any = None
+    raw: str | None = Field(default=None, description="text the value was parsed from")
+    page: int | None = None
+    method: str | None = Field(default=None, description="how it was located, e.g. label:same-line, regex, table")
+    error: str | None = None
+
+
 class Source(BaseModel):
     filename: str
     size_bytes: int
@@ -111,6 +123,7 @@ class Extraction(BaseModel):
     status: Status
     engines_used: list[str] = []
     pages_failed: list[int] = []
+    missing_required_fields: list[str] = []
 
 
 class Document(BaseModel):
@@ -119,6 +132,7 @@ class Document(BaseModel):
     metadata: dict[str, str] = {}
     outline: list[OutlineItem] = []
     form_fields: list[FormField] = []
+    fields: dict[str, FieldValue] = Field(default={}, description="variables requested by a spec file")
     pages: list[Page] = []
     warnings: list[str] = []
     extraction: Extraction

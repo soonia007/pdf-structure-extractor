@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from . import __version__
+from . import __version__, errors
 from .errors import EncryptedPDFError, ExtractionTimeout, NotAPDFError, UnreadablePDFError
 from .layout import (
     Word,
@@ -409,8 +409,16 @@ def extract(
     password: str | None = None,
     tables: bool = True,
     max_pages: int | None = None,
+    spec: Any = None,
 ) -> Document:
-    """Extract the structure of a PDF into a :class:`Document`."""
+    """Extract the structure of a PDF into a :class:`Document`.
+
+    ``spec`` (path to a YAML/JSON file, a dict or a :class:`pdfstruct.fields.Spec`)
+    lists the variables to pull out into ``Document.fields``.
+    """
+    from .fields import apply_spec, load_spec
+
+    loaded_spec = load_spec(spec) if spec is not None else None  # fail fast on a bad spec
     t0 = time.monotonic()
     started = datetime.now(timezone.utc).isoformat(timespec="seconds")
     path = Path(path)
@@ -491,7 +499,7 @@ def extract(
     _finalise_blocks(pages, raw_blocks)
 
     status = "ok" if not failed else ("failed" if len(failed) == n_pages else "partial")
-    return Document(
+    doc = Document(
         source=Source(
             filename=path.name,
             size_bytes=len(data),
@@ -514,22 +522,51 @@ def extract(
             pages_failed=failed,
         ),
     )
+    if loaded_spec is not None:
+        apply_spec(doc, loaded_spec)
+        doc.extraction.duration_ms = int((time.monotonic() - t0) * 1000)
+    return doc
 
 
-def _worker(path: str, kwargs: dict) -> str:
-    return extract(path, **kwargs).model_dump_json()
+def _worker(path: str, kwargs: dict, conn: Any) -> None:
+    try:
+        conn.send(("ok", extract(path, **kwargs).model_dump_json()))
+    except errors.PDFStructError as exc:
+        conn.send(("error", type(exc).__name__, str(exc)))
+    except BaseException as exc:  # report anything, never leave the parent waiting
+        conn.send(("crash", _short(exc)))
+    finally:
+        conn.close()
 
 
 def extract_isolated(path: str | Path, *, timeout: float = 120.0, **kwargs: Any) -> Document:
     """Run :func:`extract` in a separate process with a hard timeout.
 
-    Use this for untrusted / unknown PDFs: a parser hang or crash cannot take
-    down the caller.
+    Use this for untrusted / unknown PDFs: a parser hang, crash, segfault or
+    memory blow-up only kills the child process. Raises ``ExtractionTimeout``
+    on timeout and ``UnreadablePDFError`` if the child dies without a result.
     """
     ctx = mp.get_context("spawn")
-    with ctx.Pool(1) as pool:
-        result = pool.apply_async(_worker, (str(path), kwargs))
+    recv, send = ctx.Pipe(duplex=False)
+    proc = ctx.Process(target=_worker, args=(str(path), kwargs, send), daemon=True)
+    proc.start()
+    send.close()  # the parent only reads; EOF now means "child is gone"
+    try:
+        if not recv.poll(timeout):
+            raise ExtractionTimeout(f"extraction exceeded {timeout}s")
         try:
-            return Document.model_validate_json(result.get(timeout))
-        except mp.TimeoutError as exc:
-            raise ExtractionTimeout(f"extraction exceeded {timeout}s") from exc
+            msg = recv.recv()
+        except EOFError:
+            proc.join(5)
+            raise UnreadablePDFError(f"worker process died without a result (exit code {proc.exitcode})") from None
+    finally:
+        if proc.is_alive():
+            proc.kill()
+        proc.join(5)
+        recv.close()
+    if msg[0] == "ok":
+        return Document.model_validate_json(msg[1])
+    if msg[0] == "error":
+        exc_type = getattr(errors, msg[1], errors.PDFStructError)
+        raise exc_type(msg[2])
+    raise UnreadablePDFError(f"worker crashed: {msg[1]}")

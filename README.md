@@ -7,6 +7,7 @@
 
 - วิธีการอ่าน PDF แบบต่าง ๆ และเหตุผลที่เลือก → [docs/METHODS.md](docs/METHODS.md)
 - แผนการทำงานแบ่งเป็น Phase → [docs/ROADMAP.md](docs/ROADMAP.md)
+- ตัวแปรที่เก็บ + **กำหนดตัวแปรที่ต้องการเอง (spec)** → [docs/FIELDS.md](docs/FIELDS.md)
 - JSON Schema ของผลลัพธ์ → [schema/document.schema.json](schema/document.schema.json)
 
 ## ติดตั้ง
@@ -34,11 +35,45 @@ pdfstruct input.pdf --isolate --timeout 60
 # PDF ที่มีรหัสผ่าน
 pdfstruct secret.pdf --password 1234
 
+# ดึงเฉพาะตัวแปรที่ต้องการ (กำหนดใน spec)
+pdfstruct invoice.pdf --spec examples/invoice.yaml --fields-only --pretty
+
 # ดู JSON Schema
 pdfstruct --schema
 ```
 
-Exit code: `0` = สำเร็จ, `1` = สำเร็จบางส่วน (บางหน้าอ่านไม่ได้), `2` = error (ไม่ใช่ PDF, รหัสผิด, ...)
+Exit code: `0` = สำเร็จ, `1` = สำเร็จบางส่วน (บางหน้าอ่านไม่ได้ หรือหาตัวแปร `required` ไม่เจอ),
+`2` = error (ไม่ใช่ PDF, รหัสผิด, spec ผิด, ...)
+
+## กำหนดตัวแปรที่ต้องการ
+
+```yaml
+# my-spec.yaml
+fields:
+  - name: invoice_no
+    label: ["เลขที่", "Invoice No"]
+    required: true
+  - name: issue_date
+    type: date            # "5 มีนาคม 2569" -> "2026-03-05"
+    label: "วันที่"
+  - name: total
+    type: number          # "1,236.50 บาท" -> 1236.5
+    label: ["ยอดรวมทั้งสิ้น", "Total"]
+  - name: items
+    type: table
+    columns: { "รายการ": name, "จำนวน": { key: qty, type: integer } }
+```
+
+```bash
+pdfstruct invoice.pdf --spec my-spec.yaml --fields-only --pretty
+```
+
+```json
+{ "fields": { "invoice_no": "TX-0042", "issue_date": "2026-03-05", "total": 1001.0,
+              "items": [ { "name": "สินค้า ก", "qty": 1 }, { "name": "สินค้า ข", "qty": 4 } ] } }
+```
+
+ดูวิธีทั้งหมด (`label` / `regex` / `columns` / `source`) และชนิดข้อมูลได้ที่ [docs/FIELDS.md](docs/FIELDS.md)
 
 ใช้ใน Python:
 
@@ -56,7 +91,7 @@ print(doc.model_dump_json(indent=2))
 
 ```json
 {
-  "schema_version": "1.0.0",
+  "schema_version": "1.1.0",
   "source": { "filename": "sample.pdf", "size_bytes": 4821, "sha256": "…", "pdf_version": "1.4", "encrypted": false, "page_count": 2 },
   "metadata": { "Title": "Sample Report", "Author": "Tester" },
   "outline": [ { "title": "Introduction", "level": 1, "page": 1 } ],
@@ -92,10 +127,12 @@ src/pdfstruct/
   extractor.py   # pipeline หลัก + fallback engines + isolation
   layout.py      # words → lines → blocks → ประเภทบล็อก
   normalize.py   # ทำความสะอาดข้อความ (Unicode, ไทย, ligature, cid)
+  fields.py      # ตัวแปรที่ผู้ใช้กำหนด (spec): label / regex / table / source + แปลงชนิด
   models.py      # JSON model (pydantic) = schema
   cli.py         # command line
 tests/           # สร้าง PDF ทดสอบด้วย reportlab ตอนรัน (ไม่เก็บไฟล์ binary)
-docs/            # METHODS.md, ROADMAP.md
+docs/            # METHODS.md, ROADMAP.md, FIELDS.md
+examples/        # ตัวอย่าง spec
 schema/          # JSON Schema ที่ generate จาก models
 ```
 
