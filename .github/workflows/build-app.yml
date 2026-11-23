@@ -1,11 +1,18 @@
 name: Build desktop app
 
-# Run manually (Actions tab → "Build desktop app" → Run workflow),
-# or push a tag like v0.2.0 to also publish a GitHub Release with the files.
+# Runs when app code changes on main or a feature branch, manually
+# (Actions tab → "Build desktop app" → Run workflow), or on a tag like
+# v0.2.0, which also publishes a GitHub Release with the files.
 on:
   workflow_dispatch:
   push:
     tags: ["v*"]
+    branches: [main, "feature/**"]
+    paths:
+      - "src/**"
+      - "packaging/**"
+      - "pyproject.toml"
+      - ".github/workflows/build-app.yml"
 
 permissions:
   contents: write
