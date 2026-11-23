@@ -49,8 +49,8 @@ def test_template_file_does_not_store_values(tmp_path, invoices):
 def test_incremental_learning_and_duplicates(tmp_path, invoices):
     store = TemplateStore(tmp_path)
     store.learn("acme_invoice", [extract(invoices[0])])
-    t = store.learn("acme_invoice", [extract(invoices[0]), extract(invoices[1])])
-    assert len(t.samples) == 2  # the duplicate sample is ignored
+    t = store.learn("acme_invoice", [extract(invoices[0]), extract(invoices[1]), extract(invoices[1])])
+    assert len(t.samples) == 2  # duplicates (already stored, or twice in one batch) are ignored
     assert "tax_id" not in _fields(t)  # became constant once a 2nd sample arrived
 
 

@@ -73,7 +73,9 @@
 
 เป้าหมาย: ใช้งานจริงในระบบ ปริมาณมาก เสถียร ตรวจสอบได้
 
-- [ ] Web app ตามดีไซน์ใน [APP_DESIGN.md](APP_DESIGN.md): อัปโหลด, ดูผลบนหน้า PDF, สอน template, คลัง template
+- [x] แอปบนเครื่องตามดีไซน์ใน [APP_DESIGN.md](APP_DESIGN.md): อัปโหลด, ดูผลบนหน้า PDF, สอน template, คลัง template ([DESKTOP_APP.md](DESKTOP_APP.md))
+- [x] Build แอป Windows / macOS / Linux ด้วย PyInstaller ใน GitHub Actions
+- [ ] Code signing (Windows Authenticode, Apple notarization) เพื่อไม่ให้ระบบเตือนตอนเปิดแอป
 - [ ] REST API (FastAPI) + job queue สำหรับไฟล์ใหญ่
 - [ ] Batch แบบขนาน (process pool) + จำกัด memory/เวลา ต่อไฟล์
 - [ ] Regression corpus + golden JSON, diff ใน CI ทุก PR

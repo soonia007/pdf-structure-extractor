@@ -15,16 +15,25 @@ dependencies = [
     "pypdfium2>=4.0",
     "pydantic>=2.5",
     "pyyaml>=6.0",
+    "pillow>=10",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "reportlab>=4", "jsonschema>=4", "ruff>=0.5"]
+app = ["pywebview>=5"]
+build = ["pywebview>=5", "pyinstaller>=6"]
 
 [project.scripts]
 pdfstruct = "pdfstruct.cli:main"
 
+[project.gui-scripts]
+pdfstruct-app = "pdfstruct.app.desktop:main"
+
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"pdfstruct.app" = ["static/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

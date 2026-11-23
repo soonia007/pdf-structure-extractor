@@ -8,3 +8,6 @@ dist/
 .ruff_cache/
 /out/
 /templates/
+/dist/
+/build/
+*.spec

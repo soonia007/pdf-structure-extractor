@@ -446,7 +446,10 @@ class TemplateStore:
         old = self.load(name) if self.exists(name) else None
         samples = list(old.samples) if old else []
         known = {s.sha256 for s in samples}
-        samples += [observe(d) for d in docs if d.source.sha256 not in known]
+        for d in docs:
+            if d.source.sha256 not in known:  # same file twice (stored or in this batch) counts once
+                known.add(d.source.sha256)
+                samples.append(observe(d))
         template = build_template(name, samples, description=description, old=old)
         self.save(template)
         return template

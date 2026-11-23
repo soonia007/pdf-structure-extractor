@@ -9,10 +9,17 @@
 - แผนการทำงานแบ่งเป็น Phase → [docs/ROADMAP.md](docs/ROADMAP.md)
 - ตัวแปรที่เก็บ + **กำหนดตัวแปรที่ต้องการเอง (spec)** → [docs/FIELDS.md](docs/FIELDS.md)
 - **Template: เรียนรู้จาก PDF ตัวอย่างแล้วจำเอกสารได้เอง** → [docs/TEMPLATES.md](docs/TEMPLATES.md)
+- **แอปบนเครื่อง (หน้าต่างแอป Windows / macOS / Linux)** → [docs/DESKTOP_APP.md](docs/DESKTOP_APP.md)
 - ดีไซน์หน้าแอป → [docs/APP_DESIGN.md](docs/APP_DESIGN.md)
 - JSON Schema ของผลลัพธ์ → [schema/document.schema.json](schema/document.schema.json)
 
-## ติดตั้ง
+## ใช้งานแบบแอป (ง่ายที่สุด)
+
+ดาวน์โหลดแอปที่ build แล้วจากแท็บ **Actions → Build desktop app** (หรือหน้า **Releases**)
+แล้วเปิด `pdfstruct.exe` (Windows) หรือ `pdfstruct.app` (macOS) ได้ทันทีโดยไม่ต้องติดตั้ง Python
+หรือรันจากซอร์สด้วยคำสั่ง `pip install -e ".[app]" && pdfstruct-app` ดูรายละเอียดใน [docs/DESKTOP_APP.md](docs/DESKTOP_APP.md)
+
+## ติดตั้ง (แบบ command line / Python library)
 
 ```bash
 git clone https://github.com/soonia007/pdf-structure-extractor.git
@@ -141,10 +148,12 @@ src/pdfstruct/
   normalize.py   # ทำความสะอาดข้อความ (Unicode, ไทย, ligature, cid)
   fields.py      # ตัวแปรที่ผู้ใช้กำหนด (spec): label / regex / table / source + แปลงชนิด
   templates.py   # เรียนรู้ template จากตัวอย่าง, เก็บ, จับคู่เอกสารใหม่
+  app/           # แอปบนเครื่อง: server.py (API ภายในเครื่อง), desktop.py (หน้าต่าง), static/ (UI)
+packaging/       # build แอปด้วย PyInstaller
   models.py      # JSON model (pydantic) = schema
   cli.py         # command line
 tests/           # สร้าง PDF ทดสอบด้วย reportlab ตอนรัน (ไม่เก็บไฟล์ binary)
-docs/            # METHODS.md, ROADMAP.md, FIELDS.md, TEMPLATES.md, APP_DESIGN.md
+docs/            # METHODS.md, ROADMAP.md, FIELDS.md, TEMPLATES.md, APP_DESIGN.md, DESKTOP_APP.md
 examples/        # ตัวอย่าง spec
 schema/          # JSON Schema ที่ generate จาก models
 ```
