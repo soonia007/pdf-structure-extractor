@@ -39,6 +39,15 @@ jobs:
         run: pip install -e ".[build]"
       - name: Build
         run: python packaging/build.py
+      - name: Bundle Tesseract OCR with Thai (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install tesseract -y --no-progress
+          $src = "C:\Program Files\Tesseract-OCR"
+          Invoke-WebRequest -Uri "https://github.com/tesseract-ocr/tessdata_fast/raw/main/tha.traineddata" -OutFile "$src\tessdata\tha.traineddata"
+          Copy-Item -Recurse $src dist\pdfstruct\tesseract
+          Get-ChildItem dist\pdfstruct\tesseract\tessdata
       - name: Smoke test
         shell: bash
         run: |
@@ -46,6 +55,11 @@ jobs:
             ./dist/pdfstruct.app/Contents/MacOS/pdfstruct --version
           elif [ "$RUNNER_OS" = "Windows" ]; then
             ./dist/pdfstruct/pdfstruct.exe --version
+            # the bundled OCR must be found and have Thai (exit code 1 otherwise)
+            code=0
+            ./dist/pdfstruct/pdfstruct.exe --ocr-check ocr.json || code=$?
+            cat ocr.json || true
+            test "$code" -eq 0
           else
             ./dist/pdfstruct/pdfstruct --version
           fi

@@ -340,7 +340,11 @@ def make_handler(state: AppState, port_ref: list[int]):
         def _api(self, method: str, p: list[str], q: dict) -> None:
             route = (method, *p[:1])
             if route == ("GET", "info"):
-                return self._json({"version": __version__, "store": str(state.store.root.resolve())})
+                from .. import ocr
+
+                return self._json(
+                    {"version": __version__, "store": str(state.store.root.resolve()), "ocr": ocr.status().to_dict()}
+                )
 
             # documents ---------------------------------------------------
             if p[:1] == ["documents"]:

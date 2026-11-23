@@ -2,6 +2,7 @@
 
 __version__ = "0.1.0"
 
+from . import ocr
 from .errors import (
     EncryptedPDFError,
     ExtractionTimeout,
@@ -16,6 +17,7 @@ from .models import SCHEMA_VERSION, Document
 from .templates import Template, TemplateError, TemplateStore, extract_auto
 
 __all__ = [
+    "ocr",
     "Document",
     "EncryptedPDFError",
     "ExtractionTimeout",

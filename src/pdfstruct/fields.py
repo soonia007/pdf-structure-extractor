@@ -25,13 +25,14 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
+from . import kv
 from .errors import SpecError
 from .models import BBox, Document, FieldValue
 from .normalize import normalize_text
 
 FieldType = Literal["string", "number", "integer", "date", "boolean", "table"]
 INCLUDE_KEYS = {"metadata", "outline", "form_fields", "pages", "warnings"}
-PAGE_KEYS = {"text", "blocks", "tables", "images", "links", "annotations"}
+PAGE_KEYS = {"text", "blocks", "lines", "tables", "images", "links", "annotations"}
 
 
 class ColumnSpec(BaseModel):
@@ -73,6 +74,9 @@ class FieldSpec(BaseModel):
     label: list[str] | None = None
     columns: dict[str, ColumnSpec] | None = None
     region: Region | None = None
+    position: Literal["same-line", "right", "below"] | None = Field(
+        default=None, description="label method: where the value sits relative to its label (tried first)"
+    )
     pattern: str | None = Field(default=None, description="value must match this regex (label/regex methods)")
     pages: list[int] | None = Field(default=None, description="only search these 1-based pages")
     all: bool = Field(default=False, description="return every match as a list instead of the first")
@@ -257,38 +261,64 @@ def _fold(s: str) -> str:
 
 
 def _candidates_by_label(doc: Document, spec: FieldSpec):
-    """Yield (raw, page, method) in reading order: same line, next line, table cells."""
-    labels = [lb.casefold() for lb in spec.label or []]
+    """Every place a label's value could be, best first.
+
+    Ranked by how well the label matched (exact > start of a longer label >
+    inside other text), then by how close the value is (same segment, right,
+    below, text line, next text line), then by reading order.
+    """
+    labels = spec.label or []
+    cands: list[kv.Candidate] = []
+    order = 0
     for page in _pages(doc, spec):
+        if page.lines:
+            for c in kv.label_candidates(page, labels, order):
+                cands.append(c)
+                order = max(order, c.order)
+        # plain text lines: still useful for older outputs and odd layouts
         lines = [ln for ln in page.text.splitlines() if ln.strip()]
         for i, line in enumerate(lines):
-            low = line.casefold()
-            for lb in labels:
-                pos = low.find(lb)
-                if pos < 0:
-                    continue
-                rest = line[pos + len(lb) :].lstrip(_SEP).strip()
-                if rest:
-                    yield rest, page.number, "label:same-line"
-                if i + 1 < len(lines):
-                    yield lines[i + 1].strip(), page.number, "label:next-line"
+            best = max((m for lb in labels if (m := kv.match_label(line, lb))), key=lambda m: m.quality, default=None)
+            if best is None:
+                continue
+            order += 1
+            if best.rest:
+                cands.append(kv.Candidate(best.rest, page.number, "label:same-line", best.quality, 3, order))
+            if i + 1 < len(lines):
+                cands.append(kv.Candidate(lines[i + 1].strip(), page.number, "label:next-line", best.quality, 4, order))
         for table in page.tables:
             for r, row in enumerate(table.rows):
                 for c, cell in enumerate(row):
-                    if not cell or not any(_fold(lb) in _fold(cell) for lb in labels):
+                    if not cell:
                         continue
+                    best = max(
+                        (m for lb in labels if (m := kv.match_label(cell, lb))), key=lambda m: m.quality, default=None
+                    )
+                    if best is None:
+                        continue
+                    order += 1
+                    if best.rest:
+                        cands.append(kv.Candidate(best.rest, page.number, "label:table-cell", best.quality, 0, order))
                     right = next((x for x in row[c + 1 :] if x), None)
                     if right:
-                        yield right, page.number, "label:table-right"
+                        cands.append(kv.Candidate(right, page.number, "label:table-right", best.quality, 1, order))
                     if r + 1 < len(table.rows) and c < len(table.rows[r + 1]) and table.rows[r + 1][c]:
-                        yield table.rows[r + 1][c], page.number, "label:table-below"
+                        below = table.rows[r + 1][c]
+                        cands.append(kv.Candidate(below, page.number, "label:table-below", best.quality, 2, order))
+    if spec.position:
+        preferred = "label:" + spec.position
+        for c in cands:
+            if c.method == preferred or (spec.position == "below" and c.method == "label:table-below"):
+                c.rank = -1  # the learned/declared position wins over other relations
+    cands.sort(key=lambda c: (-c.quality, c.rank, c.order))
+    yield from cands
 
 
 def _candidates_by_regex(doc: Document, spec: FieldSpec):
     rx = re.compile(spec.regex, re.MULTILINE)
     for page in _pages(doc, spec):
         for m in rx.finditer(page.text):
-            yield (m.group(1) if rx.groups else m.group(0)), page.number, "regex"
+            yield kv.Candidate(m.group(1) if rx.groups else m.group(0), page.number, "regex", 3, 0, 0)
 
 
 def _resolve_source(doc: Document, path: str) -> Any:
@@ -301,6 +331,32 @@ def _resolve_source(doc: Document, path: str) -> Any:
         else:
             raise KeyError(part)
     return cur
+
+
+_METHOD_CONFIDENCE = {
+    "label:same-line": 0.92,
+    "label:table-cell": 0.9,
+    "label:right": 0.9,
+    "label:table-right": 0.9,
+    "label:below": 0.82,
+    "label:table-below": 0.85,
+    "label:next-line": 0.72,
+    "regex": 0.85,
+    "region": 0.9,
+    "region (moved with anchor)": 0.86,
+    "region (anchor not found)": 0.6,
+    "table": 0.9,
+    "source": 1.0,
+}
+
+
+def _confidence(method: str, quality: int = 3, has_pattern: bool = False) -> float:
+    """Rough 0..1 score: how sure we are the value belongs to the field (not OCR accuracy)."""
+    c = _METHOD_CONFIDENCE.get(method, 0.7)
+    c -= {3: 0.0, 2: 0.15, 1: 0.3}.get(quality, 0.3)
+    if has_pattern:
+        c += 0.05
+    return round(max(0.05, min(0.99, c)), 2)
 
 
 def _apply_pattern(raw: str, spec: FieldSpec) -> str | None:
@@ -317,8 +373,9 @@ def _extract_table(doc: Document, spec: FieldSpec) -> FieldValue:
     rows_out: list[dict[str, Any]] = []
     first_page = None
     errors: list[str] = []
+    prev: dict | None = None  # last matched table, to continue it on the next page
     for page in _pages(doc, spec):
-        for table in page.tables:
+        for t_index, table in enumerate(page.tables):
             header_idx, col_map = None, {}
             for r, row in enumerate(table.rows):
                 mapping = {}
@@ -329,12 +386,23 @@ def _extract_table(doc: Document, spec: FieldSpec) -> FieldValue:
                 if len(mapping) == len(wanted):
                     header_idx, col_map = r, mapping
                     break
-            if header_idx is None:
+            start = header_idx + 1 if header_idx is not None else None
+            if (
+                header_idx is None
+                and prev is not None
+                and t_index == 0
+                and page.number == prev["page"] + 1
+                and table.n_cols == prev["n_cols"]
+            ):
+                col_map, start = prev["col_map"], 0  # same table continued without its header
+            if start is None:
                 continue
             first_page = first_page or page.number
-            for row in table.rows[header_idx + 1 :]:
-                if not any(row):
-                    continue
+            prev = {"col_map": col_map, "n_cols": table.n_cols, "page": page.number}
+            header_text = {_fold(h) for h in wanted}
+            for row in table.rows[start:]:
+                if not any(row) or {_fold(c) for c in row if c} <= header_text:
+                    continue  # empty, or the header repeated on a new page
                 record: dict[str, Any] = {}
                 for c, col in col_map.items():
                     cell = row[c] if c < len(row) else None
@@ -456,7 +524,8 @@ def evaluate_field(doc: Document, spec: FieldSpec, pdf: Any = None) -> FieldValu
     candidates = _candidates_by_label(doc, spec) if spec.label else _candidates_by_regex(doc, spec)
     hits: list[FieldValue] = []
     last_error = "not found"
-    for raw, page_no, method in candidates:
+    for cand in candidates:
+        raw, page_no, method = cand.raw, cand.page, cand.method
         picked = _apply_pattern(raw, spec)
         if picked is None:
             last_error = f"no value matching pattern near label (last tried {raw[:60]!r})"
@@ -466,7 +535,16 @@ def evaluate_field(doc: Document, spec: FieldSpec, pdf: Any = None) -> FieldValu
         except ValueError as exc:
             last_error = str(exc)
             continue
-        hit = FieldValue(name=spec.name, found=True, value=value, raw=picked, page=page_no, method=method)
+        hit = FieldValue(
+            name=spec.name,
+            found=True,
+            value=value,
+            raw=picked,
+            page=page_no,
+            method=method,
+            bbox=BBox.of(*cand.bbox) if cand.bbox else None,
+            confidence=_confidence(method, cand.quality, bool(spec.pattern)),
+        )
         if not spec.all:
             return hit
         if all(h.value != hit.value or h.page != hit.page for h in hits):
@@ -502,6 +580,11 @@ def apply_spec(doc: Document, spec: Spec, pdf_path: str | Path | None = None) ->
                 result = evaluate_field(doc, f, pdf)
             except Exception as exc:  # a broken field must never break the document
                 result = FieldValue(name=f.name, found=False, value=f.default, error=f"{type(exc).__name__}: {exc}")
+            if result.found and result.confidence is None:
+                result.confidence = _confidence(result.method or "")
+            page = next((pg for pg in doc.pages if pg.number == result.page), None) if result.page else None
+            if result.found and result.confidence is not None and page is not None and page.ocr_confidence is not None:
+                result.confidence = round(result.confidence * max(0.4, page.ocr_confidence), 2)  # OCR may misread
             doc.fields[f.name] = result
             if f.required and not result.found:
                 doc.extraction.missing_required_fields.append(f.name)

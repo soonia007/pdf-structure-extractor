@@ -214,7 +214,20 @@
             }
           ],
           "default": null,
-          "description": "where on the page the value was read (region fields)"
+          "description": "where on the page the value was read"
+        },
+        "confidence": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "0..1, how sure the value belongs to this field",
+          "title": "Confidence"
         },
         "error": {
           "anyOf": [
@@ -426,12 +439,34 @@
           "title": "Needs Ocr",
           "type": "boolean"
         },
+        "ocr_confidence": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "mean OCR word confidence (0..1) when engine is ocr",
+          "title": "Ocr Confidence"
+        },
         "blocks": {
           "default": [],
           "items": {
             "$ref": "#/$defs/TextBlock"
           },
           "title": "Blocks",
+          "type": "array"
+        },
+        "lines": {
+          "default": [],
+          "description": "visual lines split into segments at wide gaps",
+          "items": {
+            "$ref": "#/$defs/TextLine"
+          },
+          "title": "Lines",
           "type": "array"
         },
         "tables": {
@@ -482,6 +517,29 @@
         "engine"
       ],
       "title": "Page",
+      "type": "object"
+    },
+    "Segment": {
+      "description": "A piece of a line separated from its neighbours by a wide gap (a cell, a label, a value).",
+      "properties": {
+        "text": {
+          "title": "Text",
+          "type": "string"
+        },
+        "bbox": {
+          "$ref": "#/$defs/BBox"
+        },
+        "bold": {
+          "default": false,
+          "title": "Bold",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "text",
+        "bbox"
+      ],
+      "title": "Segment",
       "type": "object"
     },
     "Source": {
@@ -537,6 +595,16 @@
         },
         "bbox": {
           "$ref": "#/$defs/BBox"
+        },
+        "strategy": {
+          "default": "lines",
+          "description": "ruled table, or aligned text without lines",
+          "enum": [
+            "lines",
+            "text"
+          ],
+          "title": "Strategy",
+          "type": "string"
         },
         "n_rows": {
           "title": "N Rows",
@@ -649,11 +717,36 @@
       ],
       "title": "TextBlock",
       "type": "object"
+    },
+    "TextLine": {
+      "properties": {
+        "text": {
+          "title": "Text",
+          "type": "string"
+        },
+        "bbox": {
+          "$ref": "#/$defs/BBox"
+        },
+        "segments": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/Segment"
+          },
+          "title": "Segments",
+          "type": "array"
+        }
+      },
+      "required": [
+        "text",
+        "bbox"
+      ],
+      "title": "TextLine",
+      "type": "object"
     }
   },
   "properties": {
     "schema_version": {
-      "default": "1.3.0",
+      "default": "1.4.0",
       "title": "Schema Version",
       "type": "string"
     },

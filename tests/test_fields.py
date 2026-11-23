@@ -49,7 +49,8 @@ def test_invoice_fields(invoice_pdf):
         {"name": "Widget A", "qty": 2, "unit_price": 100.0, "amount": 200.0},
         {"name": "Widget B", "qty": 3, "unit_price": 345.5, "amount": 1036.5},
     ]
-    assert doc.fields["customer"].method == "label:next-line"
+    assert doc.fields["customer"].method == "label:below"  # found by position, directly under its label
+    assert doc.fields["customer"].bbox is not None and doc.fields["customer"].confidence >= 0.8
     assert doc.fields["po_number"].found is False and v["po_number"] == "N/A"
     assert doc.extraction.missing_required_fields == []
 

@@ -9,6 +9,7 @@
 - แผนการทำงานแบ่งเป็น Phase → [docs/ROADMAP.md](docs/ROADMAP.md)
 - ตัวแปรที่เก็บ + **กำหนดตัวแปรที่ต้องการเอง (spec)** → [docs/FIELDS.md](docs/FIELDS.md)
 - **Template: เรียนรู้จาก PDF ตัวอย่างแล้วจำเอกสารได้เอง** → [docs/TEMPLATES.md](docs/TEMPLATES.md)
+- **อ่านเอกสารสแกน (OCR ไทย+อังกฤษ)** → [docs/OCR.md](docs/OCR.md)
 - **แอปบนเครื่อง (หน้าต่างแอป Windows / macOS / Linux)** → [docs/DESKTOP_APP.md](docs/DESKTOP_APP.md)
 - ดีไซน์หน้าแอป → [docs/APP_DESIGN.md](docs/APP_DESIGN.md)
 - JSON Schema ของผลลัพธ์ → [schema/document.schema.json](schema/document.schema.json)
@@ -115,7 +116,7 @@ print(doc.model_dump_json(indent=2))
 
 ```json
 {
-  "schema_version": "1.3.0",
+  "schema_version": "1.4.0",
   "source": { "filename": "sample.pdf", "size_bytes": 4821, "sha256": "…", "pdf_version": "1.4", "encrypted": false, "page_count": 2 },
   "metadata": { "Title": "Sample Report", "Author": "Tester" },
   "outline": [ { "title": "Introduction", "level": 1, "page": 1 } ],
@@ -154,6 +155,8 @@ src/pdfstruct/
   fields.py      # ตัวแปรที่ผู้ใช้กำหนด (spec): label / regex / table / source + แปลงชนิด
   templates.py   # เรียนรู้ template จากตัวอย่าง, เก็บ, จับคู่เอกสารใหม่
   prompts.py     # ส่งออก JSON/CSV และ Prompt สำเร็จรูปสำหรับ AI
+  kv.py          # หาป้าย/ค่าจากตำแหน่งบนหน้า, ตารางไม่มีเส้น
+  ocr.py         # OCR หน้าสแกนด้วย Tesseract
   app/           # แอปบนเครื่อง: server.py (API ภายในเครื่อง), desktop.py (หน้าต่าง), static/ (UI)
 packaging/       # build แอปด้วย PyInstaller
   models.py      # JSON model (pydantic) = schema

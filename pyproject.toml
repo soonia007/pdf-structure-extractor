@@ -45,3 +45,6 @@ target-version = "py310"
 [tool.ruff.lint]
 # Broad `except Exception` is deliberate: parser failures must be isolated, not propagated.
 select = ["E", "F", "W", "I", "UP", "B", "C4"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/corpus.py" = ["C408"]  # dict(...) keeps the test documents readable

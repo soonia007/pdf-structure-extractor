@@ -182,11 +182,13 @@ async function renderHome() {
     h('header', { class: 'page-head' },
       h('div', {}, h('h1', {}, 'อ่านเอกสาร PDF'), h('p', {}, 'อัปโหลด PDF ระบบจะดึงโครงสร้าง จำว่าเป็นเอกสารแบบไหน แล้วดึงตัวแปรให้อัตโนมัติ')),
       h('a', { class: 'btn', href: '#/teach' }, icon(I.plus, 16), 'สร้าง Template ใหม่')),
-    drop, statsBox,
+    drop, h('div', { id: 'ocr-note' }), statsBox,
     h('section', { class: 'card', 'aria-labelledby': 'recent' },
       h('div', { class: 'card-head' }, h('h2', { id: 'recent' }, 'เอกสารล่าสุด'), h('span', { class: 'muted small' }, 'เอกสารจะถูกล้างเมื่อปิดแอป · Template เก็บถาวร')),
       tableBox));
   await refresh();
+  const slot = document.getElementById('ocr-note');
+  if (slot) drawOcrNote(slot);
 }
 
 // ------------------------------------------------------------------ viewer
@@ -472,7 +474,10 @@ async function renderViewer(id, startPage = 1) {
       h('div', { class: 'row', style: 'gap:8px' }, h('span', { class: 'mono' }, name),
         h('span', { class: 'pill' + (isTable ? ' table' : '') }, isTable ? 'table' : typeof f.value === 'number' ? 'number'
           : typeof f.value === 'boolean' ? 'boolean' : /^\d{4}-\d{2}-\d{2}$/.test(String(f.value)) ? 'date' : 'string')),
-      h('span', { class: 'row small muted', style: 'gap:6px' }, f.found ? `หน้า ${f.page ?? '–'} · ${(f.method || '').startsWith('region') ? ((f.method || '').includes('moved') ? 'ครอป (ขยับตามป้าย)' : 'ครอป') : f.method}` : 'ไม่พบ',
+      h('span', { class: 'row small muted', style: 'gap:6px' },
+        f.found && typeof f.confidence === 'number' ? h('span', { class: 'pill' + (f.confidence < 0.75 ? ' warnpill' : ''), title: 'ความมั่นใจว่าค่านี้เป็นของตัวแปรนี้' },
+          f.confidence < 0.75 ? `ควรตรวจ ${Math.round(f.confidence * 100)}%` : `${Math.round(f.confidence * 100)}%`) : null,
+        f.found ? `หน้า ${f.page ?? '–'} · ${(f.method || '').startsWith('region') ? ((f.method || '').includes('moved') ? 'ครอป (ขยับตามป้าย)' : 'ครอป') : f.method}` : 'ไม่พบ',
         doc.extraction.template ? h('button', { class: 'btn sm', type: 'button', style: 'min-height:32px;padding:0 10px', 'aria-label': `ลบตัวแปร ${name} ออกจาก Template`,
           onclick: async (e) => {
             e.stopPropagation();
@@ -550,6 +555,8 @@ async function renderViewer(id, startPage = 1) {
         h('div', { class: 'row small muted', style: 'gap:8px' },
           `${nPages} หน้า · PDF ${doc.source.pdf_version || '?'} · ${ex.engines_used.join(', ')} · ${ex.duration_ms} ms`,
           ex.template ? h('span', { class: 'pill accent' }, `Template: ${ex.template} · ${(ex.template_score || 0).toFixed(2)}`) : null,
+          doc.pages.some((p) => p.engine === 'ocr') ? h('span', { class: 'pill manual', title: 'ข้อความในหน้าสแกนอ่านด้วย OCR อาจมีตัวอักษรผิด' },
+            `OCR ${Math.round(100 * Math.min(...doc.pages.filter((p) => p.engine === 'ocr').map((p) => p.ocr_confidence || 0)))}%`) : null,
           statusEl(s))),
       h('div', { class: 'row' }, select,
         h('button', { class: 'btn', type: 'button', onclick: async () => {
@@ -761,5 +768,22 @@ async function route() {
   view.focus({ preventScroll: true });
 }
 window.addEventListener('hashchange', route);
-api('GET', '/info').then((i) => { document.getElementById('version').textContent = `v${i.version} · Template: ${i.store}`; }).catch(() => {});
+let APP_INFO = null;
+api('GET', '/info').then((i) => {
+  APP_INFO = i;
+  const ocr = i.ocr || {};
+  const ocrText = ocr.available ? `OCR: พร้อม${ocr.thai ? ' (ไทย+อังกฤษ)' : ' (ยังไม่มีภาษาไทย)'}` : 'OCR: ไม่พบ Tesseract';
+  document.getElementById('version').textContent = `v${i.version} · ${ocrText} · Template: ${i.store}`;
+  const slot = document.getElementById('ocr-note');
+  if (slot) drawOcrNote(slot);
+}).catch(() => {});
+
+function drawOcrNote(slot) {
+  const ocr = (APP_INFO && APP_INFO.ocr) || null;
+  if (!ocr || (ocr.available && ocr.thai)) { put(slot); return; }
+  put(slot, h('div', { class: 'note warn' },
+    h('b', {}, ocr.available ? 'OCR ยังไม่มีภาษาไทย: ' : 'ยังไม่ได้ติดตั้ง OCR: '),
+    ocr.available ? 'ติดตั้งไฟล์ภาษาไทย (tha.traineddata) เพื่ออ่านเอกสารสแกนภาษาไทย'
+      : 'ไฟล์ PDF ที่เป็นภาพสแกนจะยังอ่านข้อความไม่ได้ ติดตั้ง Tesseract OCR พร้อมภาษาไทยตามคู่มือ docs/OCR.md แล้วเปิดแอปใหม่'));
+}
 route();

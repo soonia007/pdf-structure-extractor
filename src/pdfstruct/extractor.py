@@ -19,6 +19,7 @@ import hashlib
 import io
 import logging
 import multiprocessing as mp
+import re
 import time
 from collections import Counter
 from datetime import datetime, timezone
@@ -27,6 +28,7 @@ from typing import Any
 
 from . import __version__, errors
 from .errors import EncryptedPDFError, ExtractionTimeout, NotAPDFError, UnreadablePDFError
+from .kv import find_text_tables
 from .layout import (
     Word,
     body_font_size,
@@ -35,6 +37,7 @@ from .layout import (
     group_blocks,
     group_lines,
     heading_levels,
+    split_segments,
 )
 from .models import (
     Annotation,
@@ -46,9 +49,11 @@ from .models import (
     Link,
     OutlineItem,
     Page,
+    Segment,
     Source,
     Table,
     TextBlock,
+    TextLine,
 )
 from .normalize import count_private_use, count_unmapped, normalize_text
 
@@ -260,7 +265,24 @@ def _page_with_pdfplumber(pl_page: Any, number: int, with_tables: bool) -> tuple
         for w in raw_words
         if not _inside(w, table_boxes) and w["text"].strip()
     ]
-    raw_blocks = group_blocks(group_lines(words))
+    visual_lines = group_lines(words)
+    raw_blocks = group_blocks(visual_lines)
+    text_lines = to_text_lines(visual_lines)
+    if with_tables:
+        try:
+            for rows, box in find_text_tables(text_lines, table_boxes):
+                tables.append(
+                    Table(
+                        id=f"p{number}-t{len(tables) + 1}",
+                        bbox=BBox.of(*box),
+                        strategy="text",
+                        n_rows=len(rows),
+                        n_cols=len(rows[0]),
+                        rows=rows,
+                    )
+                )
+        except Exception as exc:
+            warnings.append(f"text tables: {_short(exc)}")
 
     images: list[Image] = []
     for img in pl_page.images:
@@ -288,9 +310,30 @@ def _page_with_pdfplumber(pl_page: Any, number: int, with_tables: bool) -> tuple
         char_count=len(text.replace("\n", "").replace(" ", "")),
         tables=tables,
         images=images,
+        lines=text_lines,
         warnings=warnings,
     )
     return page, raw_blocks
+
+
+def to_text_lines(lines: list) -> list[TextLine]:
+    out = []
+    for ln in lines:
+        segs = [
+            Segment(
+                text=sg.text,
+                bbox=BBox.of(sg.x0, sg.top, sg.x1, sg.bottom),
+                bold=bool(sg.font and _BOLD.search(sg.font)),
+            )
+            for sg in split_segments(ln)
+        ]
+        out.append(
+            TextLine(text="  ".join(s.text for s in segs), bbox=BBox.of(ln.x0, ln.top, ln.x1, ln.bottom), segments=segs)
+        )
+    return out
+
+
+_BOLD = re.compile(r"bold|black|heavy|semibold|demi", re.IGNORECASE)
 
 
 def _page_with_pdfium(pdfium_doc: Any, index: int) -> Page:
@@ -386,12 +429,52 @@ def _finalise_blocks(pages: list[Page], raw: dict[int, list]) -> None:
         ]
 
 
+def _garbled(page: Page) -> bool:
+    """Most characters unreadable: the font has no Unicode map (common in Thai PDFs) -> OCR reads it better."""
+    n = len(page.text.replace("\n", "").replace(" ", ""))
+    bad = count_private_use(page.text) + count_unmapped(page.text)
+    return n >= 20 and bad / n > 0.3
+
+
+def _apply_ocr(page: Page, pdfium_doc: Any, index: int) -> list | None:
+    """Replace a page's text with OCR output. Returns the raw blocks, or None if OCR is not possible."""
+    from . import ocr as ocr_mod
+
+    if not ocr_mod.available():
+        if page.needs_ocr:
+            page.warnings.append("install Tesseract OCR (with Thai) to read scanned pages - see docs/OCR.md")
+        return None
+    pdf_page = pdfium_doc[index]
+    try:
+        result = ocr_mod.ocr_page(pdf_page)
+    except Exception as exc:
+        page.warnings.append(f"OCR failed: {_short(exc)}")
+        return None
+    finally:
+        pdf_page.close()
+    if not result.words:
+        page.warnings.append("OCR found no text on this page")
+        return None
+    visual_lines = group_lines(result.words)
+    page.lines = to_text_lines(visual_lines)
+    page.text = normalize_text("\n".join(ln.text for ln in page.lines))
+    page.char_count = len(page.text.replace("\n", "").replace(" ", ""))
+    page.engine = "ocr"
+    page.ocr_confidence = result.confidence
+    page.needs_ocr = False
+    page.warnings = [
+        w for w in page.warnings if "OCR needed" not in w and "Unicode" not in w and "private-use" not in w
+    ]
+    page.warnings.append(f"text read by OCR ({result.languages}), mean word confidence {result.confidence:.0%}")
+    return group_blocks(visual_lines)
+
+
 def _flag_ocr(page: Page) -> None:
     area = max(page.width * page.height, 1.0)
     img_area = sum((i.bbox.x1 - i.bbox.x0) * (i.bbox.bottom - i.bbox.top) for i in page.images)
     if page.char_count < OCR_CHAR_THRESHOLD and (page.char_count == 0 or img_area / area > 0.3):
         page.needs_ocr = True
-        page.warnings.append("page has little or no text layer; OCR needed (see roadmap phase 3)")
+        page.warnings.append("page has little or no text layer (scanned image?); OCR needed")
     pua = count_private_use(page.text)
     if pua:
         page.warnings.append(f"{pua} private-use characters: font has no usable ToUnicode map, text may be garbled")
@@ -409,6 +492,7 @@ def extract(
     password: str | None = None,
     tables: bool = True,
     max_pages: int | None = None,
+    ocr: str = "auto",
     spec: Any = None,
 ) -> Document:
     """Extract the structure of a PDF into a :class:`Document`.
@@ -489,6 +573,12 @@ def extract(
                 links, annots = info.links_and_annotations(i, page.warnings)
                 page.links, page.annotations = links, annots
                 _flag_ocr(page)
+                if ocr != "off" and pdfium_doc is not None and i < len(pdfium_doc):
+                    if ocr == "force" or page.needs_ocr or _garbled(page):
+                        blocks = _apply_ocr(page, pdfium_doc, i)
+                        if blocks is not None:
+                            raw_blocks[number] = blocks
+                            engines.add("ocr")
             pages.append(page)
     finally:
         if pl_doc:

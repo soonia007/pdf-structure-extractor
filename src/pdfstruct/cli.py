@@ -23,6 +23,7 @@ def _run_one(src: Path, args: argparse.Namespace) -> tuple[int, str]:
         "password": args.password,
         "tables": not args.no_tables,
         "max_pages": args.max_pages,
+        "ocr": args.ocr,
         "spec": args.loaded_spec,
     }
     try:
@@ -121,6 +122,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("-o", "--output", type=Path, help="output file (single input) or directory")
     p.add_argument("--password", help="password for encrypted PDFs")
     p.add_argument("--no-tables", action="store_true", help="skip table detection (faster)")
+    p.add_argument(
+        "--ocr",
+        choices=("auto", "off", "force"),
+        default="auto",
+        help="OCR scanned/garbled pages with Tesseract: auto (default), off, or force on every page",
+    )
     p.add_argument("--max-pages", type=int, help="only process the first N pages")
     p.add_argument("--isolate", action="store_true", help="run in a child process with a hard timeout")
     p.add_argument("--timeout", type=float, default=120.0, help="timeout in seconds for --isolate")

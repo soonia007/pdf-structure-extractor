@@ -43,7 +43,17 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--store", type=Path, default=default_store(), help="template folder")
     p.add_argument("--no-isolate", action="store_true", help="read PDFs in-process (faster, less safe)")
     p.add_argument("--version", action="version", version=f"pdfstruct {__version__}")
+    p.add_argument("--ocr-check", metavar="FILE", help="write OCR status as JSON to FILE and exit (1 if not ready)")
     args = p.parse_args(argv)
+
+    if args.ocr_check:
+        import json
+
+        from ..ocr import status
+
+        st = status()
+        Path(args.ocr_check).write_text(json.dumps(st.to_dict(), ensure_ascii=False, indent=2), encoding="utf-8")
+        return 0 if st.available and "tha" in st.languages else 1
 
     from .server import AppState, make_server
 

@@ -31,6 +31,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from . import kv
 from .errors import PDFStructError
 from .fields import FieldSpec, RegionAnchor, Spec, convert, load_spec
 from .models import Document
@@ -53,7 +54,7 @@ class Observation(BaseModel):
     """One label/value pair seen in one sample."""
 
     label: str
-    method: Literal["label:same-line", "label:next-line"]
+    method: str
     type: ValueType
     pattern: str | None = None
     value_hash: str
@@ -74,6 +75,7 @@ class Sample(BaseModel):
     observations: list[Observation] = []
     tables: list[TableObservation] = []
     headings: list[str] = []
+    text_hashes: list[str] = Field(default=[], description="hashes of each text piece: finds fixed text across samples")
 
 
 class FieldStat(BaseModel):
@@ -170,44 +172,72 @@ def _clean_label(label: str) -> str:
     return re.sub(r"\s+", " ", label).strip(" .:-–—#")
 
 
-def observe(doc: Document) -> Sample:
+_EMAIL = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
+EMAIL_PATTERN = r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+"
+
+
+def value_pattern(value: str, typ: str) -> str | None:
+    """A regex the value of this field should match, so a wrong value is not picked."""
+    v = value.strip()
+    if typ != "string":
+        return None
+    if _EMAIL.fullmatch(v):
+        return EMAIL_PATTERN
+    if re.fullmatch(r"[\d๐-๙]+(?:[-/. ][\d๐-๙]+)*", v) and len(re.findall(r"\d", v)) >= 6:
+        # ids, phone numbers: keep the digit groups ("1-1001-00123-45-6" -> \d-\d{4}-\d{5}-\d{2}-\d)
+        return "".join(
+            (rf"\d{{{len(part)}}}" if len(part) > 1 else r"\d") if part.isdigit() else re.escape(part)
+            for part in re.findall(r"\d+|\D", v)
+        )
+    return generalise(v)
+
+
+def text_hashes(doc: Document) -> set[str]:
+    return {_hash(sg.text) for p in doc.pages for ln in p.lines for sg in ln.segments if sg.text.strip()}
+
+
+def observe(doc: Document, constants: set[str] | None = None) -> Sample:
+    """Find label/value pairs in one sample.
+
+    ``constants`` (hashes of text that is identical in every sample) tells
+    labels from values without relying on bold fonts or colons, which also
+    makes scanned (OCR) samples learnable.
+    """
+
+    def is_const(text: str) -> bool | None:
+        return None if constants is None else _hash(text) in constants
+
     obs: list[Observation] = []
     seen: set[str] = set()
-    for page in doc.pages:
-        lines = [ln.strip() for ln in page.text.splitlines() if ln.strip()]
-        table_text = {_fold(c) for t in page.tables for row in t.rows for c in row if c}
-        table_text |= {_fold(" ".join(c for c in row if c)) for t in page.tables for row in t.rows}
-        for i, line in enumerate(lines):
-            if len(line) > _MAX_LINE or _fold(line) in table_text:  # table rows are not label: value pairs
-                continue
-            m = _LABEL_COLON.match(line) or _LABEL_SPACE.match(line)
-            if not m:
-                continue
-            label = _clean_label(m["label"])
-            if len(label) < 2 or len(label.split()) > 6 or label.casefold() in seen:
-                continue
-            value, method = m["value"].strip(), "label:same-line"
-            if not value:
-                if i + 1 >= len(lines) or _LABEL_COLON.match(lines[i + 1]):
-                    continue
-                value, method = lines[i + 1], "label:next-line"
-            seen.add(label.casefold())
-            typ = infer_type(value)
-            obs.append(
-                Observation(
-                    label=label,
-                    method=method,
-                    type=typ,
-                    pattern=generalise(value) if typ == "string" else None,
-                    value_hash=_hash(value),
-                    page=page.number,
-                )
+
+    def add(label: str, value: str, method: str, page_no: int) -> None:
+        label, value = _clean_label(label), value.strip()
+        if not value or not kv.is_label_like(label) or label.casefold() in seen or kv.fold(value) == kv.fold(label):
+            return
+        seen.add(label.casefold())
+        typ = infer_type(value)
+        obs.append(
+            Observation(
+                label=label,
+                method=method,
+                type=typ,
+                pattern=value_pattern(value, typ),
+                value_hash=_hash(value),
+                page=page_no,
             )
+        )
+
+    for page in doc.pages:
+        if page.lines:
+            _observe_segments(page, add, is_const)
+        else:
+            _observe_text_lines(page, add)
+        _observe_kv_tables(page, add)
 
     tables: list[TableObservation] = []
     for page in doc.pages:
         for t in page.tables:
-            if len(t.rows) < 2:
+            if len(t.rows) < 2 or _is_kv_table(t):
                 continue
             header = [c or "" for c in t.rows[0]]
             if not all(header) or any(infer_type(h) in ("number", "integer") for h in header):
@@ -235,6 +265,7 @@ def observe(doc: Document) -> Sample:
         observations=obs,
         tables=tables,
         headings=headings,
+        text_hashes=sorted(text_hashes(doc)),
     )
 
 
@@ -271,7 +302,11 @@ _THAI_NAMES = {
 
 
 def field_name(label: str, used: set[str]) -> str:
-    base = _THAI_NAMES.get(label.strip())
+    label = label.strip()
+    base = kv.KNOWN_LABELS.get(label) or _THAI_NAMES.get(label)
+    if base is None and (known := kv.known_prefix(label)):
+        suffix = re.sub(r"[^a-z0-9]+", "_", label[len(known) :].casefold()).strip("_")
+        base = kv.KNOWN_LABELS[known] + (f"_{suffix}" if suffix else "")
     if base is None:
         ascii_part = re.sub(r"[^a-z0-9]+", "_", label.casefold()).strip("_")
         base = ascii_part if ascii_part and ascii_part[0].isalpha() else "field"
@@ -286,6 +321,126 @@ def field_name(label: str, used: set[str]) -> str:
 
 def _majority(values: list[str]) -> str:
     return Counter(values).most_common(1)[0][0]
+
+
+def _observe_segments(page, add, is_const=lambda _t: None) -> None:
+    """Label/value pairs from line segments (positions): the main source for learning."""
+    lines = page.lines
+    used: set[tuple[int, int]] = set()
+    for li, line in enumerate(lines):
+        segs = line.segments
+        if kv.looks_like_table_row(segs):
+            continue
+        if len(segs) >= 2 and li + 1 < len(lines) and _label_row(line, lines[li + 1], is_const):
+            nxt = lines[li + 1]
+            for seg in segs:
+                vi = next(i for i, v in enumerate(nxt.segments) if _aligned(seg, v))
+                add(seg.text, nxt.segments[vi].text, "label:below", page.number)
+                used.add((li + 1, vi))
+            continue
+        for si, seg in enumerate(segs):
+            if (li, si) in used:
+                continue
+            t = seg.text.strip()
+            m = _LABEL_COLON.match(t)
+            if m:
+                if m["value"].strip():
+                    add(m["label"], m["value"], "label:same-line", page.number)
+                elif si + 1 < len(segs):
+                    add(m["label"], segs[si + 1].text, "label:right", page.number)
+                    used.add((li, si + 1))
+                else:
+                    below = kv.segment_below(lines, li, seg)
+                    if below is not None:
+                        add(m["label"], below.text, "label:below", page.number)
+                        for lj in range(li + 1, min(li + 3, len(lines))):
+                            for bi, b in enumerate(lines[lj].segments):
+                                if b is below:
+                                    used.add((lj, bi))
+                continue
+            known = kv.known_prefix(t)
+            if known and len(t) > len(known):
+                add(known, t[len(known) :], "label:same-line", page.number)  # "ชื่อ-นามสกุล นายสมชาย"
+                continue
+            if si + 1 < len(segs) and (li, si + 1) not in used and kv.is_label_like(t):
+                right = segs[si + 1]
+                looks_value = kv.has_digit(right.text) or "@" in right.text or (seg.bold and not right.bold)
+                varies = is_const(t) is True and is_const(right.text) is False  # fixed label, changing value
+                if (known == t or looks_value or varies) and not _LABEL_COLON.match(right.text.strip()):
+                    add(t, right.text, "label:right", page.number)  # "VAT 7%   95.90"
+                    used.add((li, si + 1))
+                    continue
+            m2 = _LABEL_SPACE.match(t)
+            if m2 and kv.is_label_like(m2["label"]):
+                add(m2["label"], m2["value"], "label:same-line", page.number)  # "Tax ID 0105556123456"
+
+
+def _aligned(a, b) -> bool:
+    slack = 12.0
+    return a.bbox.x0 <= b.bbox.x1 + slack and b.bbox.x0 <= a.bbox.x1 + slack
+
+
+def _label_row(line, nxt, is_const=lambda _t: None) -> bool:
+    """A row of labels with their values in the row below (e.g. PO Number | Payment Terms)."""
+    segs, vals = line.segments, nxt.segments
+    if len(vals) != len(segs) or kv.looks_like_table_row(vals):
+        return False
+    if nxt.bbox.top - line.bbox.bottom > 2.5 * max(line.bbox.bottom - line.bbox.top, 4.0):
+        return False
+    if not all(kv.is_label_like(sg.text) for sg in segs):
+        return False
+    if not all(any(_aligned(sg, v) for v in vals) for sg in segs):
+        return False
+    bold_labels = all(sg.bold for sg in segs) and not any(v.bold for v in vals)
+    colon_labels = all(sg.text.rstrip().endswith((":", "：")) for sg in segs)
+    fixed_labels = all(is_const(sg.text) is True for sg in segs) and all(is_const(v.text) is False for v in vals)
+    return bold_labels or colon_labels or fixed_labels
+
+
+def _observe_text_lines(page, add) -> None:
+    """Fallback for pages without line geometry (older outputs)."""
+    lines = [ln.strip() for ln in page.text.splitlines() if ln.strip()]
+    table_text = {_fold(c) for t in page.tables for row in t.rows for c in row if c}
+    table_text |= {_fold(" ".join(c for c in row if c)) for t in page.tables for row in t.rows}
+    for i, line in enumerate(lines):
+        if len(line) > _MAX_LINE or _fold(line) in table_text:
+            continue
+        m = _LABEL_COLON.match(line) or _LABEL_SPACE.match(line)
+        if not m:
+            continue
+        value = m["value"].strip()
+        if value:
+            add(m["label"], value, "label:same-line", page.number)
+        elif i + 1 < len(lines) and not _LABEL_COLON.match(lines[i + 1]):
+            add(m["label"], lines[i + 1], "label:next-line", page.number)
+
+
+def _numeric_cells(cells) -> int:
+    return sum(1 for c in cells if c and kv.has_digit(c) and not re.search(r"[A-Za-zก-๛]", c.replace("%", "")))
+
+
+def _is_kv_table(t) -> bool:
+    """Header + one row of values (a box of labels), not an item list with a single item."""
+    rows = [[c or "" for c in r] for r in t.rows]
+    return (
+        len(rows) == 2
+        and all(kv.is_label_like(h) for h in rows[0] if h)
+        and not (len(rows[1]) >= 3 and _numeric_cells(rows[1]) >= 2)
+    )
+
+
+def _observe_kv_tables(page, add) -> None:
+    """Small ruled tables that are label/value boxes, not item lists."""
+    for t in page.tables:
+        rows = [[c or "" for c in r] for r in t.rows]
+        if _is_kv_table(t):
+            for label, value in zip(rows[0], rows[1], strict=False):  # labels over values
+                if label and value:
+                    add(label, value, "label:table-below", page.number)
+        elif t.n_cols == 2 and 2 <= len(rows) <= 12 and all(kv.is_label_like(r[0]) for r in rows if r[0]):
+            for r in rows:  # label | value per row
+                if r[0] and len(r) > 1 and r[1]:
+                    add(r[0], r[1], "label:table-right", page.number)
 
 
 def build_template(name: str, samples: list[Sample], *, description: str | None = None, old: Template | None = None):
@@ -320,11 +475,13 @@ def build_template(name: str, samples: list[Sample], *, description: str | None 
         patterns = {o.pattern for o in group}
         pattern = patterns.pop() if len(patterns) == 1 and typ == "string" else None
         fname = field_name(display[key], used)
+        position = Counter(o.method for o in group).most_common(1)[0][0].removeprefix("label:")
         fields.append(
             FieldSpec(
                 name=fname,
                 type=typ,
                 label=[display[key]],
+                position=position if position in ("same-line", "right", "below") else None,
                 pattern=pattern,
                 required=support == n and n >= 2,
                 description=f"learned from label '{display[key]}' ({support}/{n} samples)",
@@ -499,10 +656,14 @@ class TemplateStore:
         old = self.load(name) if self.exists(name) else None
         samples = list(old.samples) if old else []
         known = {s.sha256 for s in samples}
+        fresh = []
         for d in docs:
             if d.source.sha256 not in known:  # same file twice (stored or in this batch) counts once
                 known.add(d.source.sha256)
-                samples.append(observe(d))
+                fresh.append(d)
+        sets = [set(s.text_hashes) for s in samples if s.text_hashes] + [text_hashes(d) for d in fresh]
+        constants = set.intersection(*sets) if len(sets) >= 2 else None
+        samples += [observe(d, constants) for d in fresh]
         template = build_template(name, samples, description=description, old=old)
         self.save(template)
         return template
