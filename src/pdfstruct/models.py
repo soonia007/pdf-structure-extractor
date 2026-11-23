@@ -10,7 +10,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-SCHEMA_VERSION = "1.1.0"
+SCHEMA_VERSION = "1.2.0"
 
 BlockType = Literal["heading", "paragraph", "list_item", "header", "footer"]
 Status = Literal["ok", "partial", "failed"]
@@ -124,6 +124,8 @@ class Extraction(BaseModel):
     engines_used: list[str] = []
     pages_failed: list[int] = []
     missing_required_fields: list[str] = []
+    template: str | None = Field(default=None, description="template applied by --auto-template")
+    template_score: float | None = None
 
 
 class Document(BaseModel):

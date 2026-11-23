@@ -59,6 +59,9 @@
 - [x] `required` / `default` / `pattern` / `pages` / `all` และบันทึกที่มาของทุกค่า (`raw`, `page`, `method`)
 - [x] `include` เลือกส่วนของโครงสร้างที่จะส่งออก
 - [x] Output `fields` แยกจากชั้น layout (ชั้น layout ยัง deterministic เสมอ)
+- [x] **Template learning**: เรียนรู้ spec จาก PDF ตัวอย่าง, แยกตัวแปรออกจากข้อความคงที่, เรียนรู้เพิ่มทีละไฟล์ ([TEMPLATES.md](TEMPLATES.md))
+- [x] จำเอกสารใหม่ด้วย anchors แล้วใช้ template ที่ตรงที่สุด (`--auto-template`)
+- [ ] เรียนรู้จากการแก้ค่าของผู้ใช้ในแอป (feedback loop) → ปรับ label/pattern อัตโนมัติ
 - [ ] ตรวจสอบค่าข้ามตัวแปร: ยอดรวมตรงกับผลรวมรายการ, checksum เลขผู้เสียภาษี 13 หลัก
 - [ ] หาค่าตามตำแหน่ง (ขวา/ใต้ป้ายในพิกัด bbox) สำหรับฟอร์มที่ป้ายกับค่าอยู่คนละบรรทัดหรือคนละคอลัมน์
 - [ ] ตารางรายการที่ต่อหลายหน้าโดยไม่มีหัวตารางซ้ำ
@@ -70,6 +73,7 @@
 
 เป้าหมาย: ใช้งานจริงในระบบ ปริมาณมาก เสถียร ตรวจสอบได้
 
+- [ ] Web app ตามดีไซน์ใน [APP_DESIGN.md](APP_DESIGN.md): อัปโหลด, ดูผลบนหน้า PDF, สอน template, คลัง template
 - [ ] REST API (FastAPI) + job queue สำหรับไฟล์ใหญ่
 - [ ] Batch แบบขนาน (process pool) + จำกัด memory/เวลา ต่อไฟล์
 - [ ] Regression corpus + golden JSON, diff ใน CI ทุก PR

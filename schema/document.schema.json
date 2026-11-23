@@ -115,6 +115,31 @@
           },
           "title": "Missing Required Fields",
           "type": "array"
+        },
+        "template": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "template applied by --auto-template",
+          "title": "Template"
+        },
+        "template_score": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Template Score"
         }
       },
       "required": [
@@ -616,7 +641,7 @@
   },
   "properties": {
     "schema_version": {
-      "default": "1.1.0",
+      "default": "1.2.0",
       "title": "Schema Version",
       "type": "string"
     },

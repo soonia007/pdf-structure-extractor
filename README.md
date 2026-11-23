@@ -8,6 +8,8 @@
 - วิธีการอ่าน PDF แบบต่าง ๆ และเหตุผลที่เลือก → [docs/METHODS.md](docs/METHODS.md)
 - แผนการทำงานแบ่งเป็น Phase → [docs/ROADMAP.md](docs/ROADMAP.md)
 - ตัวแปรที่เก็บ + **กำหนดตัวแปรที่ต้องการเอง (spec)** → [docs/FIELDS.md](docs/FIELDS.md)
+- **Template: เรียนรู้จาก PDF ตัวอย่างแล้วจำเอกสารได้เอง** → [docs/TEMPLATES.md](docs/TEMPLATES.md)
+- ดีไซน์หน้าแอป → [docs/APP_DESIGN.md](docs/APP_DESIGN.md)
 - JSON Schema ของผลลัพธ์ → [schema/document.schema.json](schema/document.schema.json)
 
 ## ติดตั้ง
@@ -75,6 +77,16 @@ pdfstruct invoice.pdf --spec my-spec.yaml --fields-only --pretty
 
 ดูวิธีทั้งหมด (`label` / `regex` / `columns` / `source`) และชนิดข้อมูลได้ที่ [docs/FIELDS.md](docs/FIELDS.md)
 
+## ให้โปรแกรมเรียนรู้ template เอง
+
+```bash
+pdfstruct template learn acme_invoice inv1.pdf inv2.pdf     # เรียนรู้จากตัวอย่าง -> templates/acme_invoice.template.json
+pdfstruct new.pdf --auto-template --fields-only --pretty    # จำได้ว่าเป็นเอกสารแบบไหน แล้วดึงค่าให้
+```
+
+ข้อความที่เหมือนกันทุกใบจะใช้เป็นตัวจำเอกสาร (anchor) ส่วนค่าที่เปลี่ยนไปในแต่ละใบจะเป็นตัวแปร
+ตารางจะถูกจับคู่จากหัวคอลัมน์ ไฟล์ template ไม่เก็บค่าจริงของเอกสาร ดูรายละเอียดใน [docs/TEMPLATES.md](docs/TEMPLATES.md)
+
 ใช้ใน Python:
 
 ```python
@@ -91,7 +103,7 @@ print(doc.model_dump_json(indent=2))
 
 ```json
 {
-  "schema_version": "1.1.0",
+  "schema_version": "1.2.0",
   "source": { "filename": "sample.pdf", "size_bytes": 4821, "sha256": "…", "pdf_version": "1.4", "encrypted": false, "page_count": 2 },
   "metadata": { "Title": "Sample Report", "Author": "Tester" },
   "outline": [ { "title": "Introduction", "level": 1, "page": 1 } ],
@@ -128,10 +140,11 @@ src/pdfstruct/
   layout.py      # words → lines → blocks → ประเภทบล็อก
   normalize.py   # ทำความสะอาดข้อความ (Unicode, ไทย, ligature, cid)
   fields.py      # ตัวแปรที่ผู้ใช้กำหนด (spec): label / regex / table / source + แปลงชนิด
+  templates.py   # เรียนรู้ template จากตัวอย่าง, เก็บ, จับคู่เอกสารใหม่
   models.py      # JSON model (pydantic) = schema
   cli.py         # command line
 tests/           # สร้าง PDF ทดสอบด้วย reportlab ตอนรัน (ไม่เก็บไฟล์ binary)
-docs/            # METHODS.md, ROADMAP.md, FIELDS.md
+docs/            # METHODS.md, ROADMAP.md, FIELDS.md, TEMPLATES.md, APP_DESIGN.md
 examples/        # ตัวอย่าง spec
 schema/          # JSON Schema ที่ generate จาก models
 ```
