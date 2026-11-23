@@ -262,6 +262,56 @@ function cropDialog({ docId, doc, region, templates, onSaved }) {
   document.body.append(dlg); dlg.showModal(); nameIn.focus(); refresh();
 }
 
+async function copyText(text, area) {
+  try { await navigator.clipboard.writeText(text); return true; } catch { /* webviews may block the async API */ }
+  try { area.focus(); area.select(); return document.execCommand('copy'); } catch { return false; }
+}
+
+async function exportDialog(id, filename) {
+  const base = `/api/documents/${id}/export`;
+  const dl = (fmt, title, desc) => h('a', { class: 'card', href: `${base}?format=${fmt}`, download: '',
+    style: 'flex:1 1 200px;padding:14px 16px;text-decoration:none;color:inherit;display:flex;flex-direction:column;gap:4px' },
+  h('b', {}, title), h('span', { class: 'small muted' }, desc));
+  const list = h('div', { class: 'stack', role: 'tablist', 'aria-label': 'Prompt', style: 'flex:1 1 200px;gap:6px' });
+  const detail = h('div', { class: 'stack', style: 'flex:3 1 420px;min-width:0' });
+  const dlg = h('dialog', { class: 'wide', 'aria-labelledby': 'ex-title' }, h('div', { class: 'dlg' },
+    h('div', { class: 'row', style: 'justify-content:space-between' },
+      h('h2', { class: 'h', id: 'ex-title' }, 'ส่งออก: ', filename),
+      h('button', { class: 'btn sm', type: 'button', onclick: () => dlg.close() }, 'ปิด')),
+    h('h3', { class: 'lbl', style: 'margin:4px 0 0' }, '1. ดาวน์โหลดไฟล์'),
+    h('div', { class: 'row', style: 'align-items:stretch' },
+      dl('full', 'JSON เต็ม', 'โครงสร้างทั้งหมด: ข้อความ บล็อก ตาราง ตำแหน่ง และตัวแปร'),
+      dl('fields', 'JSON เฉพาะตัวแปร', 'สั้น อ่านง่าย เหมาะส่งให้ระบบอื่นหรือ AI'),
+      dl('csv', 'CSV (Excel)', 'ตัวแปรเป็นแถว เปิดใน Excel ได้ภาษาไทยถูกต้อง')),
+    h('h3', { class: 'lbl', style: 'margin:8px 0 0' }, '2. Prompt สำหรับนำข้อมูลไปใช้กับ AI'),
+    h('p', { class: 'small muted', style: 'margin:0' }, 'แต่ละ Prompt ใส่ข้อมูลของเอกสารนี้ไว้แล้ว กดคัดลอกแล้ววางใน Claude หรือ ChatGPT ได้ทันที'),
+    h('div', { class: 'note warn small' }, 'Prompt มีข้อมูลจริงจากเอกสาร ตรวจให้แน่ใจว่าส่งข้อมูลนี้ให้บริการ AI ภายนอกได้ตามนโยบายขององค์กร'),
+    h('div', { class: 'row', style: 'align-items:flex-start' }, list, detail)));
+  dlg.addEventListener('close', () => dlg.remove());
+  document.body.append(dlg); dlg.showModal();
+
+  let prompts = [];
+  try { prompts = await api('GET', `/documents/${id}/prompts`); } catch (e) { put(detail, h('div', { class: 'note bad' }, e.message)); return; }
+  let current = prompts[0].id;
+  function draw() {
+    const p = prompts.find((x) => x.id === current);
+    put(list, prompts.map((x) => h('button', { type: 'button', role: 'tab', 'aria-selected': String(x.id === current),
+      class: 'btn sm', style: `justify-content:flex-start;min-height:40px;${x.id === current ? 'background:var(--accent-soft);color:var(--accent);border-color:var(--accent)' : ''}`,
+      onclick: () => { current = x.id; draw(); } }, x.title)));
+    const area = h('textarea', { class: 'input', rows: 16, readonly: true, 'aria-label': 'ข้อความ Prompt', spellcheck: 'false' });
+    area.value = p.text;
+    put(detail,
+      h('div', {}, h('b', {}, p.title), h('div', { class: 'small muted' }, p.description)),
+      area,
+      h('div', { class: 'row', style: 'justify-content:space-between' },
+        h('span', { class: 'small muted' }, `${p.text.length.toLocaleString()} ตัวอักษร`),
+        h('button', { class: 'btn primary', type: 'button', onclick: async () => {
+          toast(await copyText(p.text, area) ? 'คัดลอก Prompt แล้ว วางในแชต AI ได้เลย' : 'คัดลอกไม่ได้ ให้เลือกข้อความแล้วกด Ctrl+C');
+        } }, 'คัดลอก Prompt')));
+  }
+  draw();
+}
+
 async function renderViewer(id, startPage = 1) {
   const data = await api('GET', '/documents/' + id);
   const s = data.summary, doc = data.document;
@@ -271,7 +321,10 @@ async function renderViewer(id, startPage = 1) {
     return;
   }
   const st = { page: Math.min(startPage, Math.max(1, data.document ? data.document.pages.length : 1)), tab: 'fields',
-    show: { fields: true, tables: true, blocks: false }, edits: { ...data.edits }, hot: null, crop: false, draft: null };
+    show: { fields: true, tables: true, blocks: false }, edits: { ...data.edits }, hot: null, crop: false, draft: null,
+    zoom: Number(store('zoom')) || 1 };
+  const ZOOMS = [0.5, 0.75, 1, 1.25, 1.5, 2, 3, 4];
+  const BASE_W = 720;
   const templates = await api('GET', '/templates');
   const nPages = doc.pages.length;
   const paneBox = h('section', { class: 'pane', 'aria-label': 'หน้าเอกสาร' });
@@ -307,21 +360,75 @@ async function renderViewer(id, startPage = 1) {
     if (st.show.tables) page.tables.forEach((t) => boxes.push(boxEl('table', t.bbox, page, `ตาราง ${t.n_rows}×${t.n_cols}`)));
     if (st.show.fields) fieldBoxes(page).forEach((f) => boxes.push(boxEl(f.region ? 'field region' : 'field', f.bbox, page, f.found === false ? f.name + ' (ไม่พบ)' : f.name, f.name)));
     if (st.draft) boxes.push(h('div', { class: 'box draft', style: `left:${st.draft.x0 * 100}%;top:${st.draft.top * 100}%;width:${(st.draft.x1 - st.draft.x0) * 100}%;height:${(st.draft.bottom - st.draft.top) * 100}%` }));
-    const img = h('img', { src: `/api/documents/${id}/pages/${st.page}.png?scale=2`, alt: `หน้า ${st.page} ของ ${s.filename}`, draggable: 'false' });
-    const paper = h('div', { class: 'paper' + (st.crop ? ' cropping' : '') }, img, boxes);
+    const scale = st.zoom <= 1 ? 2 : st.zoom <= 2 ? 3 : 4;  // sharper image when zoomed in
+    const img = h('img', { src: `/api/documents/${id}/pages/${st.page}.png?scale=${scale}`, alt: `หน้า ${st.page} ของ ${s.filename}`, draggable: 'false' });
+    const paper = h('div', { class: 'paper' + (st.crop ? ' cropping' : ''), style: `width:${Math.round(BASE_W * st.zoom)}px` }, img, boxes);
     if (st.crop) attachCrop(paper, page);
     const cropBtn = h('button', { class: 'btn sm' + (st.crop ? ' primary' : ''), type: 'button', 'aria-pressed': String(st.crop),
       onclick: () => { st.crop = !st.crop; st.draft = null; drawPane(); } },
     icon(['M6 2v14a2 2 0 0 0 2 2h14', 'M18 22V8a2 2 0 0 0-2-2H2'], 16), st.crop ? 'กำลังครอป (กดเพื่อออก)' : 'ครอปตัวแปร');
+    const oldStage = paneBox.querySelector('.stage');
+    const keep = oldStage ? { x: oldStage.scrollLeft, y: oldStage.scrollTop } : null;
+    const zoomBar = h('div', { class: 'row', role: 'group', 'aria-label': 'ซูมเอกสาร', style: 'gap:6px;flex-wrap:nowrap' },
+      h('button', { class: 'btn sm', type: 'button', 'aria-label': 'ซูมออก', disabled: st.zoom <= ZOOMS[0], onclick: () => zoomStep(-1) }, icon('M5 12h14', 16)),
+      h('button', { class: 'btn sm', type: 'button', 'aria-label': 'ซูม 100%', title: 'กลับเป็น 100%', style: 'min-width:64px', onclick: () => setZoom(1) }, `${Math.round(st.zoom * 100)}%`),
+      h('button', { class: 'btn sm', type: 'button', 'aria-label': 'ซูมเข้า', disabled: st.zoom >= ZOOMS[ZOOMS.length - 1], onclick: () => zoomStep(1) }, icon(I.plus, 16)),
+      h('button', { class: 'btn sm', type: 'button', onclick: fitWidth }, 'พอดีความกว้าง'));
     put(paneBox,
-      h('div', { class: 'row small' }, cropBtn, h('b', {}, 'แสดงกรอบ:'), toggles, h('span', { class: 'grow' }),
+      h('div', { class: 'row small' }, cropBtn, zoomBar, h('b', {}, 'แสดงกรอบ:'), toggles, h('span', { class: 'grow' }),
         h('span', { class: 'row', style: 'gap:6px;flex-wrap:nowrap' },
           h('button', { class: 'btn sm', type: 'button', 'aria-label': 'หน้าก่อน', disabled: st.page <= 1, onclick: () => { st.page--; draw(); } }, icon(I.left, 16)),
           h('span', { class: 'muted', style: 'white-space:nowrap' }, `หน้า ${st.page} / ${nPages}`),
           h('button', { class: 'btn sm', type: 'button', 'aria-label': 'หน้าถัดไป', disabled: st.page >= nPages, onclick: () => { st.page++; draw(); } }, icon(I.right, 16)))),
       page.needs_ocr ? h('div', { class: 'note warn' }, 'หน้านี้ไม่มีชั้นข้อความ (น่าจะเป็นภาพสแกน) ต้อง OCR ซึ่งยังไม่รองรับในเวอร์ชันนี้') : null,
       st.crop ? h('div', { class: 'note', style: 'background:#F3EEFF;color:#4C1D95' }, 'ลากกรอบครอบค่าที่ต้องการบนหน้าเอกสาร ระบบจะแสดงค่าที่อ่านได้ให้ตรวจก่อนบันทึก (กรอบสีม่วง = ตัวแปรที่ครอปไว้)') : null,
-      h('div', { class: 'stage' }, paper));
+      h('div', { class: 'stage', tabindex: '0', 'aria-label': 'หน้าเอกสาร ใช้ปุ่ม + และ - เพื่อซูม หรือ Ctrl + ล้อเมาส์' }, paper));
+    const stage = paneBox.querySelector('.stage');
+    if (keep) { stage.scrollLeft = keep.x; stage.scrollTop = keep.y; }
+    stage.addEventListener('wheel', (e) => {
+      if (!e.ctrlKey && !e.metaKey) return;  // plain wheel keeps scrolling
+      e.preventDefault();
+      zoomStep(e.deltaY < 0 ? 1 : -1, e);
+    }, { passive: false });
+    stage.addEventListener('keydown', (e) => {
+      if (e.key === '+' || e.key === '=') { e.preventDefault(); zoomStep(1); }
+      else if (e.key === '-') { e.preventDefault(); zoomStep(-1); }
+      else if (e.key === '0') { e.preventDefault(); setZoom(1); }
+    });
+  }
+
+  function setZoom(z, ev) {
+    const stage = paneBox.querySelector('.stage');
+    const paperEl = stage && stage.querySelector('.paper');
+    let anchor = null;  // keep the point under the cursor (or the centre) in place
+    if (stage && paperEl) {
+      const sr = stage.getBoundingClientRect(), pr = paperEl.getBoundingClientRect();
+      const cx = ev ? ev.clientX : sr.left + sr.width / 2, cy = ev ? ev.clientY : sr.top + sr.height / 2;
+      anchor = { fx: (cx - pr.left) / pr.width, fy: (cy - pr.top) / pr.height, ox: cx - sr.left, oy: cy - sr.top };
+    }
+    st.zoom = Math.min(4, Math.max(0.5, Math.round(z * 100) / 100));
+    store('zoom', String(st.zoom));
+    drawPane();
+    const ns = paneBox.querySelector('.stage'), np = ns && ns.querySelector('.paper');
+    if (anchor && np) {
+      ns.scrollLeft = np.offsetLeft + anchor.fx * np.offsetWidth - anchor.ox;
+      ns.scrollTop = np.offsetTop + anchor.fy * np.offsetHeight - anchor.oy;
+    }
+    ns && ns.focus({ preventScroll: true });
+  }
+  function zoomStep(dir, ev) {
+    const next = dir > 0 ? ZOOMS.find((z) => z > st.zoom + 0.001) : [...ZOOMS].reverse().find((z) => z < st.zoom - 0.001);
+    if (next) setZoom(next, ev);
+  }
+  function fitWidth() {
+    const stage = paneBox.querySelector('.stage');
+    if (!stage) return;
+    const pad = 44;  // stage padding
+    setZoom(Math.max(0.5, Math.min(4, (stage.clientWidth - pad) / BASE_W)));
+  }
+  function highlight(key) {
+    st.hot = key;
+    paneBox.querySelectorAll('.box').forEach((b) => b.classList.toggle('hot', !!key && b.dataset.key === key));
   }
 
   function attachCrop(paper, page) {
@@ -354,7 +461,13 @@ async function renderViewer(id, startPage = 1) {
   function fieldCard(name, f) {
     const isTable = Array.isArray(f.value) || (f.value === null && f.method === 'table');
     const card = h('div', { class: 'fcard' + (f.found ? '' : ' missing'),
-      onmouseenter: () => { st.hot = name; drawPane(); }, onmouseleave: () => { st.hot = null; drawPane(); } },
+      onmouseenter: () => highlight(name), onmouseleave: () => highlight(null),
+      onclick: (e) => {
+        if (e.target.closest('input,button,a')) return;
+        if (f.page && f.page !== st.page) { st.page = f.page; drawPane(); }
+        const box = paneBox.querySelector(`.box[data-key="${CSS.escape(name)}"]`);
+        if (box) { box.scrollIntoView({ block: 'center', inline: 'center', behavior: 'smooth' }); highlight(name); }
+      } },
     h('div', { class: 'row', style: 'justify-content:space-between' },
       h('div', { class: 'row', style: 'gap:8px' }, h('span', { class: 'mono' }, name),
         h('span', { class: 'pill' + (isTable ? ' table' : '') }, isTable ? 'table' : typeof f.value === 'number' ? 'number'
@@ -444,7 +557,10 @@ async function renderViewer(id, startPage = 1) {
           await api('POST', `/documents/${id}/apply`, { template: select.value }); toast('ใช้ Template แล้ว'); renderViewer(id);
         } }, 'ใช้ Template'),
         h('a', { class: 'btn', href: '#/teach?doc=' + id }, 'ใช้เป็นตัวอย่าง Template'),
-        h('a', { class: 'btn primary', href: `/api/documents/${id}/export`, download: '' }, 'ส่งออก JSON'))),
+        h('button', { class: 'btn primary', type: 'button', onclick: async () => {
+          if (Object.keys(st.edits).length) await api('PUT', `/documents/${id}/edits`, st.edits);  // export what the user sees
+          exportDialog(id, s.filename);
+        } }, 'ส่งออก'))),
     h('div', { class: 'viewer' }, paneBox, sideBox));
   draw();
 }

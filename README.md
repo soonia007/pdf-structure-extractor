@@ -44,6 +44,9 @@ pdfstruct input.pdf --isolate --timeout 60
 # PDF ที่มีรหัสผ่าน
 pdfstruct secret.pdf --password 1234
 
+# Prompt สำเร็จรูปสำหรับนำข้อมูลไปใช้กับ AI (summary / validate / spreadsheet / database / code / qa / map)
+pdfstruct invoice.pdf --auto-template --prompt validate
+
 # ดึงเฉพาะตัวแปรที่ต้องการ (กำหนดใน spec)
 pdfstruct invoice.pdf --spec examples/invoice.yaml --fields-only --pretty
 
@@ -150,6 +153,7 @@ src/pdfstruct/
   normalize.py   # ทำความสะอาดข้อความ (Unicode, ไทย, ligature, cid)
   fields.py      # ตัวแปรที่ผู้ใช้กำหนด (spec): label / regex / table / source + แปลงชนิด
   templates.py   # เรียนรู้ template จากตัวอย่าง, เก็บ, จับคู่เอกสารใหม่
+  prompts.py     # ส่งออก JSON/CSV และ Prompt สำเร็จรูปสำหรับ AI
   app/           # แอปบนเครื่อง: server.py (API ภายในเครื่อง), desktop.py (หน้าต่าง), static/ (UI)
 packaging/       # build แอปด้วย PyInstaller
   models.py      # JSON model (pydantic) = schema

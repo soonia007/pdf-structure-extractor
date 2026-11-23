@@ -12,6 +12,7 @@ from .errors import PDFStructError
 from .extractor import extract, extract_isolated
 from .fields import apply_spec, filter_output, load_spec
 from .models import Document
+from .prompts import PROMPT_IDS, build_prompts
 from .templates import DEFAULT_STORE, TemplateStore, spec_yaml
 
 EXIT_OK, EXIT_PARTIAL, EXIT_ERROR = 0, 1, 2
@@ -39,6 +40,8 @@ def _run_one(src: Path, args: argparse.Namespace) -> tuple[int, str]:
     ok = doc.extraction.status == "ok" and not doc.extraction.missing_required_fields
     code = EXIT_OK if ok else EXIT_PARTIAL
     indent = 2 if args.pretty else None
+    if args.prompt:
+        return code, next(x.text for x in build_prompts(doc) if x.id == args.prompt)
     if args.fields_only:
         out = {
             "file": doc.source.filename,
@@ -126,6 +129,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--auto-template", action="store_true", help="recognise the document and apply a learned template")
     p.add_argument("--store", type=Path, default=DEFAULT_STORE, help="template directory (default ./templates)")
     p.add_argument("--threshold", type=float, default=0.6, help="minimum match score for --auto-template")
+    p.add_argument(
+        "--prompt",
+        choices=PROMPT_IDS,
+        help="print a ready-made AI prompt with this document's data instead of JSON",
+    )
     p.add_argument("--pretty", action="store_true", help="indent the JSON output")
     p.add_argument("--compact", action="store_true", help="omit null fields")
     p.add_argument("--schema", action="store_true", help="print the JSON Schema of the output and exit")

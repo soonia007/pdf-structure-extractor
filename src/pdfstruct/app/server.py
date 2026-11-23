@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
-from .. import __version__
+from .. import __version__, prompts
 from ..errors import PDFStructError
 from ..extractor import extract, extract_isolated
 from ..fields import FieldSpec, apply_spec, evaluate_field
@@ -365,7 +365,7 @@ def make_handler(state: AppState, port_ref: list[int]):
                     if entry.doc is None:
                         raise KeyError("no document")
                     page_no = int(p[3].removesuffix(".png"))
-                    scale = min(max(float(q.get("scale", ["1.5"])[0]), 0.5), 3.0)
+                    scale = min(max(float(q.get("scale", ["1.5"])[0]), 0.5), 4.0)
                     return self._send(200, render_page_png(entry.path, page_no, scale), "image/png")
                 if method == "PUT" and p[2:] == ["edits"]:
                     edits = json.loads(self._body() or b"{}")
@@ -406,14 +406,24 @@ def make_handler(state: AppState, port_ref: list[int]):
                 if method == "GET" and p[2:] == ["export"]:
                     if entry.doc is None:
                         raise ValueError("document could not be read")
-                    data = entry.doc.model_dump(mode="json")
-                    for k, v in entry.edits.items():
-                        if k in data["fields"]:
-                            data["fields"][k]["value"] = v
-                            data["fields"][k]["edited"] = True
-                    stem = Path(entry.filename).stem
-                    disp = f"attachment; filename*=UTF-8''{quote(stem)}.json"
-                    return self._json(data, extra={"Content-Disposition": disp})
+                    fmt = q.get("format", ["full"])[0]
+                    stem = quote(Path(entry.filename).stem)
+                    if fmt == "csv":
+                        body = prompts.csv_export(entry.doc, entry.edits).encode("utf-8")
+                        disp = f"attachment; filename*=UTF-8''{stem}.csv"
+                        return self._send(200, body, "text/csv; charset=utf-8", {"Content-Disposition": disp})
+                    if fmt == "fields":
+                        disp = f"attachment; filename*=UTF-8''{stem}.fields.json"
+                        data = prompts.fields_export(entry.doc, entry.edits)
+                        return self._json(data, extra={"Content-Disposition": disp})
+                    if fmt != "full":
+                        raise ValueError("format must be full, fields or csv")
+                    disp = f"attachment; filename*=UTF-8''{stem}.json"
+                    return self._json(prompts.full_export(entry.doc, entry.edits), extra={"Content-Disposition": disp})
+                if method == "GET" and p[2:] == ["prompts"]:
+                    if entry.doc is None:
+                        raise ValueError("document could not be read")
+                    return self._json([x.to_dict() for x in prompts.build_prompts(entry.doc, entry.edits)])
 
             # templates ---------------------------------------------------
             if p[:1] == ["templates"]:

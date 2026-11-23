@@ -163,3 +163,30 @@ def test_crop_flow(app, make_invoice):
 
     assert call("DELETE", "/api/templates/crop_tpl/fields/buyer")[1]["custom_fields"] == []
     assert call("DELETE", "/api/templates/crop_tpl/fields/buyer")[0] == 400
+
+
+def test_export_formats_and_prompts(app, invoice_pdf):
+    state, call, _ = app
+    doc_id = upload(call, invoice_pdf, auto=0)[1]["id"]
+    entry = state.doc(doc_id)
+    from pdfstruct.fields import Spec, apply_spec
+
+    apply_spec(
+        entry.doc, Spec.model_validate({"fields": [{"name": "total", "type": "number", "label": "Grand Total"}]})
+    )
+    call("PUT", f"/api/documents/{doc_id}/edits", {"total": 5})
+
+    status, full, res = call("GET", f"/api/documents/{doc_id}/export?format=full")
+    assert status == 200 and full["fields"]["total"]["value"] == 5 and full["fields"]["total"]["edited"]
+    status, fields, res = call("GET", f"/api/documents/{doc_id}/export?format=fields")
+    assert fields["fields"] == {"total": 5} and ".fields.json" in res.getheader("Content-Disposition")
+    status, body, res = call("GET", f"/api/documents/{doc_id}/export?format=csv")
+    assert (
+        status == 200
+        and "text/csv" in res.getheader("Content-Type")
+        and body.decode("utf-8-sig").startswith("field,value")
+    )
+    assert call("GET", f"/api/documents/{doc_id}/export?format=xml")[0] == 400
+
+    status, prompts, _ = call("GET", f"/api/documents/{doc_id}/prompts")
+    assert status == 200 and len(prompts) == 7 and '"total": 5' in prompts[0]["text"]
