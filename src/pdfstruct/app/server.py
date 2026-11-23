@@ -31,7 +31,7 @@ from urllib.parse import parse_qs, quote, unquote, urlparse
 from .. import __version__
 from ..errors import PDFStructError
 from ..extractor import extract, extract_isolated
-from ..fields import apply_spec
+from ..fields import FieldSpec, apply_spec, evaluate_field
 from ..models import Document
 from ..templates import TemplateStore, spec_yaml
 
@@ -117,7 +117,7 @@ class AppState:
                 found = self.store.best(doc)
                 if found:
                     tpl, res = found
-                    apply_spec(doc, tpl.spec)
+                    apply_spec(doc, tpl.spec, pdf_path=path)
                     doc.extraction.template, doc.extraction.template_score = tpl.name, res.score
             entry.doc = doc
         except PDFStructError as exc:
@@ -154,7 +154,7 @@ class AppState:
                     test = Document.model_validate(d.model_dump())
                     test.fields = {}
                     test.extraction.missing_required_fields = []
-                    apply_spec(test, tpl.spec)
+                    apply_spec(test, tpl.spec, pdf_path=self.docs[entry_id].path)
                     checks.append(
                         {
                             "doc_id": entry_id,
@@ -185,6 +185,7 @@ def template_summary(t) -> dict:
         "anchors": len(t.anchors),
         "found_rate": round(sum(rates) / len(rates), 3) if rates else None,
         "manual_spec": t.manual_spec,
+        "auto_fields": t.auto_fields,
         "updated_at": t.updated_at,
     }
 
@@ -198,6 +199,7 @@ def template_detail(t) -> dict:
         "spec_yaml": spec_yaml(t.spec),
         "stats": stats,
         "sample_files": [s.filename for s in t.samples],
+        "custom_fields": [f.name for f in t.custom_fields],
     }
 
 
@@ -382,12 +384,25 @@ def make_handler(state: AppState, port_ref: list[int]):
                     tpl = state.store.load(name)
                     entry.doc.fields = {}
                     entry.doc.extraction.missing_required_fields = []
-                    apply_spec(entry.doc, tpl.spec)
+                    apply_spec(entry.doc, tpl.spec, pdf_path=entry.path)
                     result = next((r for r in state.store.match(entry.doc) if r.template == name), None)
                     entry.doc.extraction.template = name
                     entry.doc.extraction.template_score = result.score if result else None
                     entry.edits = {}
                     return self._json(entry.summary())
+                if method == "POST" and p[2:] == ["region-preview"]:
+                    body = json.loads(self._body() or b"{}")
+                    spec = FieldSpec(
+                        name="preview",
+                        type=body.get("type") or "string",
+                        region=body.get("region"),
+                        pattern=body.get("pattern") or None,
+                    )
+                    import pdfplumber
+
+                    with pdfplumber.open(str(entry.path)) as pdf:
+                        fv = evaluate_field(entry.doc, spec, pdf)
+                    return self._json(fv.model_dump(mode="json"))
                 if method == "GET" and p[2:] == ["export"]:
                     if entry.doc is None:
                         raise ValueError("document could not be read")
@@ -419,6 +434,15 @@ def make_handler(state: AppState, port_ref: list[int]):
                     state.store._path(name)  # validates the name before starting the job
                     job = state.learn_async(name, ids, body.get("description") or None)
                     return self._json({"job": job.id}, 202)
+                if method == "POST" and p[2:] == ["fields"]:
+                    body = json.loads(self._body() or b"{}")
+                    sample = None
+                    if body.get("doc_id"):
+                        sample = state.doc(body["doc_id"]).doc
+                    tpl = state.store.add_field(name, body.get("field") or {}, sample)
+                    return self._json(template_detail(tpl), 201)
+                if method == "DELETE" and len(p) == 4 and p[2] == "fields":
+                    return self._json(template_detail(state.store.remove_field(name, p[3])))
                 if method == "PUT" and p[2:] == ["spec"]:
                     import yaml
 

@@ -7,6 +7,8 @@ one locating method:
 * ``regex``   - regular expression over the whole document text
 * ``label``   - text label(s) printed next to / above the value (``"ยอดรวม"``)
 * ``columns`` - a table recognised by its header cells (``type: table``)
+* ``region``  - a box you drew on the page ("crop"), as fractions of the page
+                size, so it also works when the PDF page size differs slightly
 
 and is converted to ``type``: string, number, integer, date, boolean or table.
 Everything is rule-based and deterministic; the same spec on the same PDF
@@ -24,7 +26,8 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, ValidationError, field_validator, model_validator
 
 from .errors import SpecError
-from .models import Document, FieldValue
+from .models import BBox, Document, FieldValue
+from .normalize import normalize_text
 
 FieldType = Literal["string", "number", "integer", "date", "boolean", "table"]
 INCLUDE_KEYS = {"metadata", "outline", "form_fields", "pages", "warnings"}
@@ -36,6 +39,31 @@ class ColumnSpec(BaseModel):
     type: Literal["string", "number", "integer", "date", "boolean"] = "string"
 
 
+class RegionAnchor(BaseModel):
+    """Fixed text near a region and where it was (fractions of the page) when the box was drawn."""
+
+    text: str
+    x0: float
+    top: float
+
+
+class Region(BaseModel):
+    """A user-drawn box. Coordinates are fractions (0..1) of the page, origin top-left."""
+
+    page: int = Field(ge=1)
+    x0: float = Field(ge=0, le=1)
+    top: float = Field(ge=0, le=1)
+    x1: float = Field(ge=0, le=1)
+    bottom: float = Field(ge=0, le=1)
+    anchor: RegionAnchor | None = Field(default=None, description="move the box with this text when the layout shifts")
+
+    @model_validator(mode="after")
+    def _ordered(self) -> Region:
+        if self.x1 - self.x0 < 0.003 or self.bottom - self.top < 0.002:
+            raise ValueError("region is too small or inverted")
+        return self
+
+
 class FieldSpec(BaseModel):
     name: str = Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$")
     type: FieldType = "string"
@@ -44,6 +72,7 @@ class FieldSpec(BaseModel):
     regex: str | None = None
     label: list[str] | None = None
     columns: dict[str, ColumnSpec] | None = None
+    region: Region | None = None
     pattern: str | None = Field(default=None, description="value must match this regex (label/regex methods)")
     pages: list[int] | None = Field(default=None, description="only search these 1-based pages")
     all: bool = Field(default=False, description="return every match as a list instead of the first")
@@ -69,11 +98,13 @@ class FieldSpec(BaseModel):
 
     @model_validator(mode="after")
     def _one_method(self) -> FieldSpec:
-        methods = [m for m in ("source", "regex", "label", "columns") if getattr(self, m)]
+        methods = [m for m in ("source", "regex", "label", "columns", "region") if getattr(self, m)]
         if len(methods) != 1:
-            raise ValueError(f"field '{self.name}': use exactly one of source / regex / label / columns")
-        if (self.type == "table") != bool(self.columns):
-            raise ValueError(f"field '{self.name}': 'columns' is used with type 'table' (and only then)")
+            raise ValueError(f"field '{self.name}': use exactly one of source / regex / label / columns / region")
+        if self.columns and self.type != "table":
+            raise ValueError(f"field '{self.name}': 'columns' is used with type 'table' only")
+        if self.type == "table" and not (self.columns or self.region):
+            raise ValueError(f"field '{self.name}': type 'table' needs 'columns' or a 'region'")
         for rx in (self.regex, self.pattern):
             if rx:
                 try:
@@ -325,7 +356,87 @@ def _extract_table(doc: Document, spec: FieldSpec) -> FieldValue:
     )
 
 
-def evaluate_field(doc: Document, spec: FieldSpec) -> FieldValue:
+def _region_bbox(page: Any, r: Region) -> tuple[float, float, float, float]:
+    x_off, y_off, x_end, y_end = page.bbox
+    w, h = x_end - x_off, y_end - y_off
+    return (x_off + r.x0 * w, y_off + r.top * h, x_off + r.x1 * w, y_off + r.bottom * h)
+
+
+def _fold_text(s: str) -> str:
+    return re.sub(r"\s+", "", s).casefold()
+
+
+def _shift_by_anchor(doc: Document, r: Region) -> tuple[Region, str]:
+    """Move the region by however far its anchor text moved on this document."""
+    if r.anchor is None:
+        return r, "region"
+    page = next((p for p in doc.pages if p.number == r.page), None)
+    if page is None or not page.width or not page.height:
+        return r, "region"
+    target = _fold_text(r.anchor.text)
+    best = None
+    for b in page.blocks:
+        if target not in _fold_text(b.text):
+            continue
+        bx, by = b.bbox.x0 / page.width, b.bbox.top / page.height
+        dist = abs(bx - r.anchor.x0) + abs(by - r.anchor.top)
+        if best is None or dist < best[0]:
+            best = (dist, bx - r.anchor.x0, by - r.anchor.top)
+    if best is None:
+        return r, "region (anchor not found)"
+    _, dx, dy = best
+    if abs(dx) < 1e-4 and abs(dy) < 1e-4:
+        return r, "region"
+    dx = max(dx, -r.x0) if dx < 0 else min(dx, 1 - r.x1)
+    dy = max(dy, -r.top) if dy < 0 else min(dy, 1 - r.bottom)
+    moved = r.model_copy(update={"x0": r.x0 + dx, "x1": r.x1 + dx, "top": r.top + dy, "bottom": r.bottom + dy})
+    return moved, "region (moved with anchor)"
+
+
+def _extract_region(pdf: Any, spec: FieldSpec, doc: Document | None = None) -> FieldValue:
+    r = spec.region
+    method = "region"
+    if doc is not None:
+        r, method = _shift_by_anchor(doc, r)
+    if pdf is None:
+        return FieldValue(name=spec.name, found=False, value=spec.default, error="region fields need the PDF file")
+    if r.page > len(pdf.pages):
+        return FieldValue(name=spec.name, found=False, value=spec.default, error=f"document has no page {r.page}")
+    page = pdf.pages[r.page - 1]
+    box = _region_bbox(page, r)
+    crop = page.crop(box)  # keeps characters that touch the box, so a loose box still works
+    bbox = BBox.of(*box)
+
+    if spec.type == "table":
+        rows = crop.extract_table() or []
+        rows = [[normalize_text(c) if c else None for c in row] for row in rows if any(row)]
+        if len(rows) < 2:
+            return FieldValue(name=spec.name, found=False, value=spec.default, page=r.page, bbox=bbox,
+                              error="no table with a header row inside the region")  # fmt: skip
+        header = [re.sub(r"[^0-9a-z]+", "_", (h or f"col{i + 1}").casefold()).strip("_") or f"col{i + 1}"
+                  for i, h in enumerate(rows[0])]  # fmt: skip
+        value = [dict(zip(header, row, strict=False)) for row in rows[1:]]
+        return FieldValue(name=spec.name, found=True, value=value, page=r.page, method=method, bbox=bbox)
+
+    text = normalize_text(crop.extract_text() or "")
+    if not text:
+        return FieldValue(name=spec.name, found=False, value=spec.default, page=r.page, bbox=bbox,
+                          error="region is empty on this document")  # fmt: skip
+    picked = _apply_pattern(text, spec)
+    if picked is None:
+        return FieldValue(name=spec.name, found=False, value=spec.default, raw=text, page=r.page, bbox=bbox,
+                          error="text in region does not match pattern")  # fmt: skip
+    try:
+        value = convert(picked if spec.type != "string" else picked.replace("\n", " "), spec.type)
+    except ValueError as exc:
+        return FieldValue(name=spec.name, found=False, value=spec.default, raw=text, page=r.page, bbox=bbox,
+                          error=str(exc))  # fmt: skip
+    return FieldValue(name=spec.name, found=True, value=value, raw=picked, page=r.page, method=method, bbox=bbox)
+
+
+def evaluate_field(doc: Document, spec: FieldSpec, pdf: Any = None) -> FieldValue:
+    if spec.region:
+        return _extract_region(pdf, spec, doc)
     if spec.type == "table":
         return _extract_table(doc, spec)
 
@@ -372,16 +483,31 @@ def evaluate_field(doc: Document, spec: FieldSpec) -> FieldValue:
     return FieldValue(name=spec.name, found=False, value=spec.default, error=last_error)
 
 
-def apply_spec(doc: Document, spec: Spec) -> Document:
-    """Fill ``doc.fields`` from the spec. Never raises for a missing value."""
-    for f in spec.fields:
+def apply_spec(doc: Document, spec: Spec, pdf_path: str | Path | None = None) -> Document:
+    """Fill ``doc.fields`` from the spec. Never raises for a missing value.
+
+    ``pdf_path`` is needed for ``region`` fields (they read the PDF directly).
+    """
+    pdf = None
+    if pdf_path is not None and any(f.region for f in spec.fields):
+        import pdfplumber
+
         try:
-            result = evaluate_field(doc, f)
-        except Exception as exc:  # a broken field must never break the document
-            result = FieldValue(name=f.name, found=False, value=f.default, error=f"{type(exc).__name__}: {exc}")
-        doc.fields[f.name] = result
-        if f.required and not result.found:
-            doc.extraction.missing_required_fields.append(f.name)
+            pdf = pdfplumber.open(str(pdf_path))
+        except Exception as exc:
+            doc.warnings.append(f"region fields: cannot reopen PDF: {exc}")
+    try:
+        for f in spec.fields:
+            try:
+                result = evaluate_field(doc, f, pdf)
+            except Exception as exc:  # a broken field must never break the document
+                result = FieldValue(name=f.name, found=False, value=f.default, error=f"{type(exc).__name__}: {exc}")
+            doc.fields[f.name] = result
+            if f.required and not result.found:
+                doc.extraction.missing_required_fields.append(f.name)
+    finally:
+        if pdf is not None:
+            pdf.close()
     if doc.extraction.missing_required_fields:
         doc.warnings.append(f"required fields not found: {doc.extraction.missing_required_fields}")
     return doc

@@ -137,3 +137,69 @@ def test_cli_template_flow(tmp_path, invoices, capsys):
     data = json.loads(out.read_text())
     assert data["template"] == "acme" and data["fields"]["invoice_no"] == "INV-2026-117"
     assert main(["template", "--store", store, "show", "nope"]) == 2
+
+
+def _box(doc, text, pad=0.004):
+    for p in doc.pages:
+        for b in p.blocks:
+            if text in b.text:
+                return {"page": p.number, "x0": b.bbox.x0 / p.width - pad, "top": b.bbox.top / p.height - pad,
+                        "x1": b.bbox.x1 / p.width + pad, "bottom": b.bbox.bottom / p.height + pad}  # fmt: skip
+    raise AssertionError(text)
+
+
+def test_crop_fields_create_template_and_survive_relearning(tmp_path, invoices):
+    store = TemplateStore(tmp_path)
+    first = extract(invoices[0])
+    # start a template only by drawing a box on one document
+    t = store.add_field("acme", {"name": "buyer", "region": _box(first, "Somchai")}, sample=first)
+    assert list(_fields(t)) == ["buyer"] and not t.auto_fields  # only what the user drew
+    assert "Customer" in t.anchors  # fixed text is still learned, to recognise the document
+    # a crop field with the same name as a learned one replaces it
+    t = store.add_field("acme", {"name": "date", "type": "date", "region": _box(first, "Date:"), "pattern": r"[\d/]+"})
+    assert _fields(t)["date"].region is not None
+    # re-learning with more samples keeps the user's fields
+    t = store.learn("acme", [extract(invoices[1])])
+    assert _fields(t)["buyer"].region is not None and _fields(t)["date"].region is not None
+    # the crop field reads the right value on an unseen document
+    doc = extract_auto(invoices[2], store)
+    assert doc.fields["buyer"].value == "Kasem Ltd"
+    assert doc.fields["date"].value == "2026-04-01"
+
+
+def test_remove_learned_and_crop_fields(tmp_path, invoices):
+    store = TemplateStore(tmp_path)
+    store.learn("acme", [extract(p) for p in invoices[:2]])
+    t = store.remove_field("acme", "customer")
+    assert "customer" not in _fields(t) and t.excluded_fields == ["customer"]
+    t = store.learn("acme", [extract(invoices[2])])
+    assert "customer" not in _fields(t)  # removal is remembered when re-learning
+    first = extract(invoices[0])
+    store.add_field("acme", {"name": "buyer", "region": _box(first, "Somchai")})
+    t = store.remove_field("acme", "buyer")
+    assert "buyer" not in _fields(t) and t.custom_fields == [] and t.excluded_fields == ["customer"]
+    with pytest.raises(TemplateError):
+        store.remove_field("acme", "nope")
+    with pytest.raises(TemplateError):
+        store.add_field("new_one", {"name": "x", "region": _box(first, "Somchai")})  # no sample to create it
+
+
+def test_crop_box_follows_its_label_when_layout_shifts(tmp_path, make_invoice):
+    short = make_invoice(31, "INV-31", "01/06/2026", "Short Co", [["A", "1", "5.00", "5.00"]], "5.00")
+    rows = [["A", "1", "5.00", "5.00"], ["B", "2", "5.00", "10.00"], ["C", "3", "5.00", "15.00"]]
+    long_ = make_invoice(32, "INV-32", "02/06/2026", "Long Co", rows, "30.00")
+    store = TemplateStore(tmp_path)
+    sample = extract(short)
+    field = {"name": "total", "type": "number", "region": _box(sample, "Grand Total"), "pattern": r"[\d,]+\.\d{2}"}
+    t = store.add_field("shift", field, sample=sample)
+    assert _fields(t)["total"].region.anchor.text == "Grand Total"
+    doc = extract_auto(long_, store)
+    assert doc.fields["total"].value == 30.0  # the box moved down with "Grand Total"
+    assert doc.fields["total"].method == "region (moved with anchor)"
+    same = extract_auto(short, store)
+    assert same.fields["total"].value == 5.0 and same.fields["total"].method == "region"
+
+
+def test_table_rows_are_not_learned_as_fields(tmp_path, invoices):
+    t = TemplateStore(tmp_path).learn("one", [extract(invoices[1])])
+    assert not any(n.startswith(("widget", "bolt")) for n in _fields(t))

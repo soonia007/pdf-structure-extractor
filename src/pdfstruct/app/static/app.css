@@ -143,3 +143,11 @@ dialog::backdrop { background: rgba(17,19,24,.45); }
 .spin { width: 16px; height: 16px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: s .8s linear infinite; display: inline-block; }
 @keyframes s { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .spin { animation-duration: 3s; } .bar > i { transition: none; } }
+
+/* crop mode */
+.paper.cropping { cursor: crosshair; user-select: none; touch-action: none; }
+.paper.cropping img { pointer-events: none; }
+.box.draft { outline: 2px dashed #7C3AED; background: rgba(124,58,237,.14); }
+.box.field.region { outline-color: #7C3AED; background: rgba(124,58,237,.10); }
+.box.field.region .box-tag { background: #6D28D9; }
+.box.field.region.hot { background: rgba(124,58,237,.28); }

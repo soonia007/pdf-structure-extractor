@@ -91,6 +91,8 @@ pdfstruct template learn acme_invoice inv1.pdf inv2.pdf     # เรียนร
 pdfstruct new.pdf --auto-template --fields-only --pretty    # จำได้ว่าเป็นเอกสารแบบไหน แล้วดึงค่าให้
 ```
 
+หรือ **ครอปเอง** ในแอป: ลากกรอบบนหน้า PDF แล้วตั้งชื่อตัวแปร ([docs/DESKTOP_APP.md](docs/DESKTOP_APP.md#ครอปตัวแปรเอง-สอนด้วยตัวเอง))
+
 ข้อความที่เหมือนกันทุกใบจะใช้เป็นตัวจำเอกสาร (anchor) ส่วนค่าที่เปลี่ยนไปในแต่ละใบจะเป็นตัวแปร
 ตารางจะถูกจับคู่จากหัวคอลัมน์ ไฟล์ template ไม่เก็บค่าจริงของเอกสาร ดูรายละเอียดใน [docs/TEMPLATES.md](docs/TEMPLATES.md)
 
@@ -110,7 +112,7 @@ print(doc.model_dump_json(indent=2))
 
 ```json
 {
-  "schema_version": "1.2.0",
+  "schema_version": "1.3.0",
   "source": { "filename": "sample.pdf", "size_bytes": 4821, "sha256": "…", "pdf_version": "1.4", "encrypted": false, "page_count": 2 },
   "metadata": { "Title": "Sample Report", "Author": "Tester" },
   "outline": [ { "title": "Introduction", "level": 1, "page": 1 } ],

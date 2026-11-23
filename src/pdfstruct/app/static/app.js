@@ -190,7 +190,79 @@ async function renderHome() {
 }
 
 // ------------------------------------------------------------------ viewer
-async function renderViewer(id) {
+const FIELD_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+function cropDialog({ docId, doc, region, templates, onSaved }) {
+  const stem = (doc.source.filename || 'document').replace(/\.pdf$/i, '').replace(/[^A-Za-z0-9_.-]+/g, '_').replace(/^[^A-Za-z0-9]+/, '') || 'my_template';
+  const preview = h('div', { class: 'note', style: 'background:var(--soft);white-space:pre-line;min-height:44px', 'aria-live': 'polite' }, 'กำลังอ่านค่าในกรอบ…');
+  const nameIn = h('input', { class: 'input', id: 'cf-name', placeholder: 'เช่น invoice_no', style: 'width:100%' });
+  const typeIn = h('select', { class: 'input', id: 'cf-type' },
+    [['string', 'ข้อความ (string)'], ['number', 'ตัวเลข (number)'], ['integer', 'จำนวนเต็ม (integer)'], ['date', 'วันที่ (date)'], ['boolean', 'ใช่/ไม่ใช่ (boolean)'], ['table', 'ตาราง (table)']]
+      .map(([v, l]) => h('option', { value: v }, l)));
+  const patIn = h('input', { class: 'input mono', id: 'cf-pat', placeholder: 'ไม่บังคับ เช่น [A-Z]+-\\d+', style: 'width:100%' });
+  const reqIn = h('input', { type: 'checkbox', checked: true, style: 'width:18px;height:18px;accent-color:#1F4FC9' });
+  const current = doc.extraction.template;
+  const tplSel = h('select', { class: 'input', id: 'cf-tpl' },
+    templates.map((t) => h('option', { value: t.name, selected: t.name === current }, t.name)),
+    h('option', { value: '__new__', selected: !current }, '+ สร้าง Template ใหม่'));
+  const newTpl = h('input', { class: 'input', value: stem, 'aria-label': 'ชื่อ Template ใหม่', style: 'width:100%' });
+  const newBox = h('div', { class: 'stack', style: 'gap:6px' }, h('span', { class: 'small muted' }, 'ชื่อ Template ใหม่ (A–Z 0–9 _ . -)'), newTpl);
+  const err = h('div', { class: 'note bad', hidden: true });
+  const syncNew = () => { newBox.hidden = tplSel.value !== '__new__'; };
+  tplSel.addEventListener('change', syncNew); syncNew();
+
+  let timer = null;
+  async function refresh() {
+    try {
+      const r = await api('POST', `/documents/${docId}/region-preview`, { region, type: typeIn.value, pattern: patIn.value.trim() || null });
+      if (r.found) {
+        put(preview, h('b', {}, 'ค่าที่อ่านได้: '), Array.isArray(r.value) ? `ตาราง ${r.value.length} แถว (คอลัมน์: ${Object.keys(r.value[0] || {}).join(', ')})` : String(r.value),
+          r.raw && String(r.raw) !== String(r.value) ? h('div', { class: 'small muted' }, `ข้อความในกรอบ: “${r.raw}”`) : null);
+        preview.className = 'note ok';
+      } else {
+        put(preview, h('b', {}, 'ยังอ่านค่าไม่ได้: '), r.error || '', r.raw ? h('div', { class: 'small' }, `ข้อความในกรอบ: “${r.raw}”`) : null);
+        preview.className = 'note warn';
+      }
+    } catch (e) { put(preview, e.message); preview.className = 'note bad'; }
+  }
+  const later = () => { clearTimeout(timer); timer = setTimeout(refresh, 250); };
+  typeIn.addEventListener('change', refresh); patIn.addEventListener('input', later);
+
+  const field = (label, forId, input, hint) => h('div', { class: 'stack', style: 'gap:6px;flex:1 1 220px' },
+    h('label', { for: forId, class: 'lbl' }, label), input, hint ? h('span', { class: 'small muted' }, hint) : null);
+  const dlg = h('dialog', { 'aria-labelledby': 'cf-title' }, h('div', { class: 'dlg' },
+    h('h2', { class: 'h', id: 'cf-title' }, 'ตัวแปรใหม่จากกรอบที่เลือก'),
+    h('p', { class: 'muted small', style: 'margin:0' }, `หน้า ${region.page} · เอกสารแบบเดียวกันจะถูกอ่านจากตำแหน่งนี้`),
+    preview,
+    h('div', { class: 'row', style: 'align-items:flex-start' },
+      field('ชื่อตัวแปร', 'cf-name', nameIn, 'ภาษาอังกฤษ ตัวเลข และ _ เช่น total_amount'),
+      field('ชนิดข้อมูล', 'cf-type', typeIn)),
+    h('div', { class: 'row', style: 'align-items:flex-start' },
+      field('รูปแบบที่ต้องตรง (regex)', 'cf-pat', patIn, 'ใช้เมื่ออยากดึงเฉพาะบางส่วนของข้อความในกรอบ'),
+      h('label', { class: 'check', style: 'flex:0 0 auto;align-self:center' }, reqIn, 'ต้องมีค่า (required)')),
+    h('div', { class: 'row', style: 'align-items:flex-start' }, field('บันทึกลง Template', 'cf-tpl', tplSel), h('div', { style: 'flex:1 1 220px' }, newBox)),
+    err,
+    h('div', { class: 'row', style: 'justify-content:flex-end' },
+      h('button', { class: 'btn', type: 'button', onclick: () => dlg.close() }, 'ยกเลิก'),
+      h('button', { class: 'btn primary', type: 'button', onclick: async () => {
+        const name = nameIn.value.trim();
+        const tpl = tplSel.value === '__new__' ? newTpl.value.trim() : tplSel.value;
+        const problem = !FIELD_RE.test(name) ? 'ชื่อตัวแปรใช้ได้เฉพาะ A–Z a–z 0–9 _ และห้ามขึ้นต้นด้วยตัวเลข'
+          : !NAME_RE.test(tpl) ? 'ชื่อ Template ใช้ได้เฉพาะ A–Z a–z 0–9 _ . -' : null;
+        if (problem) { err.hidden = false; err.textContent = problem; return; }
+        const f = { name, type: typeIn.value, region, required: reqIn.checked, description: 'ครอปจากหน้าจอ' };
+        if (patIn.value.trim()) f.pattern = patIn.value.trim();
+        try {
+          await api('POST', `/templates/${encodeURIComponent(tpl)}/fields`, { field: f, doc_id: docId });
+          await api('POST', `/documents/${docId}/apply`, { template: tpl });
+          dlg.close(); toast(`เพิ่มตัวแปร ${name} ลง ${tpl} แล้ว`); onSaved();
+        } catch (e) { err.hidden = false; err.textContent = e.message; }
+      } }, 'บันทึกตัวแปร'))));
+  dlg.addEventListener('close', () => { dlg.remove(); onSaved.cancel && onSaved.cancel(); });
+  document.body.append(dlg); dlg.showModal(); nameIn.focus(); refresh();
+}
+
+async function renderViewer(id, startPage = 1) {
   const data = await api('GET', '/documents/' + id);
   const s = data.summary, doc = data.document;
   if (!doc) {
@@ -198,7 +270,8 @@ async function renderViewer(id) {
       h('h1', { style: 'margin:0' }, s.filename), h('div', { class: 'note bad' }, `${s.error.error}: ${s.error.message}`));
     return;
   }
-  const st = { page: 1, tab: 'fields', show: { fields: true, tables: true, blocks: false }, edits: { ...data.edits }, hot: null };
+  const st = { page: Math.min(startPage, Math.max(1, data.document ? data.document.pages.length : 1)), tab: 'fields',
+    show: { fields: true, tables: true, blocks: false }, edits: { ...data.edits }, hot: null, crop: false, draft: null };
   const templates = await api('GET', '/templates');
   const nPages = doc.pages.length;
   const paneBox = h('section', { class: 'pane', 'aria-label': 'หน้าเอกสาร' });
@@ -207,7 +280,9 @@ async function renderViewer(id) {
   function fieldBoxes(page) {
     const out = [];
     for (const [name, f] of Object.entries(doc.fields)) {
-      if (!f.found || f.page !== page.number || Array.isArray(f.value) || !f.raw) continue;
+      if (f.page !== page.number) continue;
+      if (f.bbox) { out.push({ name, bbox: f.bbox, region: true, found: f.found }); continue; }
+      if (!f.found || Array.isArray(f.value) || !f.raw) continue;
       const raw = fold(f.raw);
       const blk = page.blocks.find((b) => fold(b.text).includes(raw));
       if (blk) out.push({ name, bbox: blk.bbox });
@@ -230,15 +305,50 @@ async function renderViewer(id) {
     const boxes = [];
     if (st.show.blocks) page.blocks.forEach((b) => boxes.push(boxEl('block', b.bbox, page, null)));
     if (st.show.tables) page.tables.forEach((t) => boxes.push(boxEl('table', t.bbox, page, `ตาราง ${t.n_rows}×${t.n_cols}`)));
-    if (st.show.fields) fieldBoxes(page).forEach((f) => boxes.push(boxEl('field', f.bbox, page, f.name, f.name)));
-    const img = h('img', { src: `/api/documents/${id}/pages/${st.page}.png?scale=2`, alt: `หน้า ${st.page} ของ ${s.filename}` });
-    put(paneBox, 
-      h('div', { class: 'row small' }, h('b', {}, 'แสดงกรอบ:'), toggles, h('span', { class: 'grow' }),
-        h('button', { class: 'btn sm', type: 'button', 'aria-label': 'หน้าก่อน', disabled: st.page <= 1, onclick: () => { st.page--; draw(); } }, icon(I.left, 16)),
-        h('span', { class: 'muted' }, `หน้า ${st.page} / ${nPages}`),
-        h('button', { class: 'btn sm', type: 'button', 'aria-label': 'หน้าถัดไป', disabled: st.page >= nPages, onclick: () => { st.page++; draw(); } }, icon(I.right, 16))),
+    if (st.show.fields) fieldBoxes(page).forEach((f) => boxes.push(boxEl(f.region ? 'field region' : 'field', f.bbox, page, f.found === false ? f.name + ' (ไม่พบ)' : f.name, f.name)));
+    if (st.draft) boxes.push(h('div', { class: 'box draft', style: `left:${st.draft.x0 * 100}%;top:${st.draft.top * 100}%;width:${(st.draft.x1 - st.draft.x0) * 100}%;height:${(st.draft.bottom - st.draft.top) * 100}%` }));
+    const img = h('img', { src: `/api/documents/${id}/pages/${st.page}.png?scale=2`, alt: `หน้า ${st.page} ของ ${s.filename}`, draggable: 'false' });
+    const paper = h('div', { class: 'paper' + (st.crop ? ' cropping' : '') }, img, boxes);
+    if (st.crop) attachCrop(paper, page);
+    const cropBtn = h('button', { class: 'btn sm' + (st.crop ? ' primary' : ''), type: 'button', 'aria-pressed': String(st.crop),
+      onclick: () => { st.crop = !st.crop; st.draft = null; drawPane(); } },
+    icon(['M6 2v14a2 2 0 0 0 2 2h14', 'M18 22V8a2 2 0 0 0-2-2H2'], 16), st.crop ? 'กำลังครอป (กดเพื่อออก)' : 'ครอปตัวแปร');
+    put(paneBox,
+      h('div', { class: 'row small' }, cropBtn, h('b', {}, 'แสดงกรอบ:'), toggles, h('span', { class: 'grow' }),
+        h('span', { class: 'row', style: 'gap:6px;flex-wrap:nowrap' },
+          h('button', { class: 'btn sm', type: 'button', 'aria-label': 'หน้าก่อน', disabled: st.page <= 1, onclick: () => { st.page--; draw(); } }, icon(I.left, 16)),
+          h('span', { class: 'muted', style: 'white-space:nowrap' }, `หน้า ${st.page} / ${nPages}`),
+          h('button', { class: 'btn sm', type: 'button', 'aria-label': 'หน้าถัดไป', disabled: st.page >= nPages, onclick: () => { st.page++; draw(); } }, icon(I.right, 16)))),
       page.needs_ocr ? h('div', { class: 'note warn' }, 'หน้านี้ไม่มีชั้นข้อความ (น่าจะเป็นภาพสแกน) ต้อง OCR ซึ่งยังไม่รองรับในเวอร์ชันนี้') : null,
-      h('div', { class: 'stage' }, h('div', { class: 'paper' }, img, boxes)));
+      st.crop ? h('div', { class: 'note', style: 'background:#F3EEFF;color:#4C1D95' }, 'ลากกรอบครอบค่าที่ต้องการบนหน้าเอกสาร ระบบจะแสดงค่าที่อ่านได้ให้ตรวจก่อนบันทึก (กรอบสีม่วง = ตัวแปรที่ครอปไว้)') : null,
+      h('div', { class: 'stage' }, paper));
+  }
+
+  function attachCrop(paper, page) {
+    let start = null;
+    const at = (e) => {
+      const r = paper.getBoundingClientRect();
+      return { x: Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)), y: Math.min(1, Math.max(0, (e.clientY - r.top) / r.height)) };
+    };
+    const rectOf = (a, b) => ({ x0: Math.min(a.x, b.x), top: Math.min(a.y, b.y), x1: Math.max(a.x, b.x), bottom: Math.max(a.y, b.y) });
+    paper.addEventListener('pointerdown', (e) => { if (e.button !== 0) return; e.preventDefault(); paper.setPointerCapture(e.pointerId); start = at(e); });
+    paper.addEventListener('pointermove', (e) => {
+      if (!start) return;
+      const r = rectOf(start, at(e));
+      let d = paper.querySelector('.box.draft');
+      if (!d) { d = h('div', { class: 'box draft' }); paper.append(d); }
+      d.style.cssText = `left:${r.x0 * 100}%;top:${r.top * 100}%;width:${(r.x1 - r.x0) * 100}%;height:${(r.bottom - r.top) * 100}%`;
+    });
+    paper.addEventListener('pointerup', (e) => {
+      if (!start) return;
+      const r = rectOf(start, at(e)); start = null;
+      if (r.x1 - r.x0 < 0.01 || r.bottom - r.top < 0.006) { paper.querySelector('.box.draft')?.remove(); return; }
+      const region = { page: page.number, x0: +r.x0.toFixed(4), top: +r.top.toFixed(4), x1: +r.x1.toFixed(4), bottom: +r.bottom.toFixed(4) };
+      st.draft = region;
+      const done = () => renderViewer(id, st.page);
+      done.cancel = () => { st.draft = null; drawPane(); };
+      cropDialog({ docId: id, doc, region, templates, onSaved: done });
+    });
   }
 
   function fieldCard(name, f) {
@@ -249,7 +359,15 @@ async function renderViewer(id) {
       h('div', { class: 'row', style: 'gap:8px' }, h('span', { class: 'mono' }, name),
         h('span', { class: 'pill' + (isTable ? ' table' : '') }, isTable ? 'table' : typeof f.value === 'number' ? 'number'
           : typeof f.value === 'boolean' ? 'boolean' : /^\d{4}-\d{2}-\d{2}$/.test(String(f.value)) ? 'date' : 'string')),
-      h('span', { class: 'muted small' }, f.found ? `หน้า ${f.page ?? '–'} · ${f.method}` : 'ไม่พบ')));
+      h('span', { class: 'row small muted', style: 'gap:6px' }, f.found ? `หน้า ${f.page ?? '–'} · ${(f.method || '').startsWith('region') ? ((f.method || '').includes('moved') ? 'ครอป (ขยับตามป้าย)' : 'ครอป') : f.method}` : 'ไม่พบ',
+        doc.extraction.template ? h('button', { class: 'btn sm', type: 'button', style: 'min-height:32px;padding:0 10px', 'aria-label': `ลบตัวแปร ${name} ออกจาก Template`,
+          onclick: async (e) => {
+            e.stopPropagation();
+            if (!confirm(`ลบตัวแปร "${name}" ออกจาก Template "${doc.extraction.template}"?`)) return;
+            await api('DELETE', `/templates/${encodeURIComponent(doc.extraction.template)}/fields/${encodeURIComponent(name)}`);
+            await api('POST', `/documents/${id}/apply`, { template: doc.extraction.template });
+            toast('ลบตัวแปรแล้ว'); renderViewer(id, st.page);
+          } }, 'ลบ') : null)));
     if (isTable && Array.isArray(f.value)) {
       const cols = f.value.length ? Object.keys(f.value[0]) : [];
       card.append(h('div', { class: 'table-wrap' }, h('table', { class: 't small' },
@@ -281,8 +399,8 @@ async function renderViewer(id) {
             ? h('span', { class: 'status warn' }, 'ขาด: ' + doc.extraction.missing_required_fields.join(', '))
             : h('span', { class: 'status ok' }, 'ไม่มีตัวแปรบังคับที่ขาด')) : null,
         entries.length ? entries.map(([n, f]) => fieldCard(n, f)) :
-          h('div', { class: 'note warn' }, 'เอกสารนี้ยังไม่ตรงกับ Template ใด เลือก Template ด้านบน หรือ ',
-            h('a', { href: '#/teach?doc=' + id }, 'สอน Template จากเอกสารนี้')),
+          h('div', { class: 'note warn' }, 'เอกสารนี้ยังไม่มีตัวแปร กด ', h('b', {}, 'ครอปตัวแปร'), ' แล้วลากกรอบบนหน้าเอกสารเพื่อกำหนดเอง หรือเลือก Template ด้านบน หรือ ',
+            h('a', { href: '#/teach?doc=' + id }, 'ให้ระบบเรียนรู้อัตโนมัติ')),
         entries.length ? h('button', { class: 'btn', type: 'button', onclick: async () => {
           await api('PUT', `/documents/${id}/edits`, st.edits); toast('บันทึกการแก้ไขแล้ว (มีผลกับไฟล์ JSON ที่ส่งออก)');
         } }, 'บันทึกการแก้ไข') : null);
@@ -465,7 +583,8 @@ async function renderTemplates() {
   const cards = list.map((t) => h('article', { class: 'card tcard' },
     h('div', { class: 'row', style: 'justify-content:space-between;align-items:flex-start' },
       h('div', { style: 'min-width:0' }, h('h2', { class: 'h mono' }, t.name), h('div', { class: 'muted small' }, t.description || '—')),
-      h('span', { class: 'pill ' + (t.manual_spec ? 'manual' : 'accent') }, t.manual_spec ? 'แก้ spec เอง' : 'เรียนรู้อัตโนมัติ')),
+      h('span', { class: 'pill ' + (t.manual_spec || !t.auto_fields ? 'manual' : 'accent') },
+        t.manual_spec ? 'แก้ spec เอง' : !t.auto_fields ? 'ครอปเอง' : 'เรียนรู้อัตโนมัติ')),
     h('div', { class: 'mini' }, h('div', {}, h('span', { class: 'muted small' }, 'ตัวอย่าง'), h('b', {}, t.samples)),
       h('div', {}, h('span', { class: 'muted small' }, 'ตัวแปร'), h('b', {}, t.fields)),
       h('div', {}, h('span', { class: 'muted small' }, 'Anchors'), h('b', {}, t.anchors))),

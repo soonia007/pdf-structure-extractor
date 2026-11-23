@@ -523,7 +523,7 @@ def extract(
         ),
     )
     if loaded_spec is not None:
-        apply_spec(doc, loaded_spec)
+        apply_spec(doc, loaded_spec, pdf_path=path)
         doc.extraction.duration_ms = int((time.monotonic() - t0) * 1000)
     return doc
 

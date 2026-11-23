@@ -32,7 +32,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from .errors import PDFStructError
-from .fields import FieldSpec, Spec, convert, load_spec
+from .fields import FieldSpec, RegionAnchor, Spec, convert, load_spec
 from .models import Document
 
 TEMPLATE_VERSION = 1
@@ -98,6 +98,9 @@ class Template(BaseModel):
     spec: Spec = Spec()
     samples: list[Sample] = []
     field_stats: list[FieldStat] = Field(default=[], description="how often each field was found in the samples")
+    custom_fields: list[FieldSpec] = Field(default=[], description="fields the user defined (e.g. cropped regions)")
+    auto_fields: bool = Field(default=True, description="False: only the user's fields; samples still teach anchors")
+    excluded_fields: list[str] = Field(default=[], description="learned fields the user removed")
 
 
 class MatchResult(BaseModel):
@@ -172,9 +175,10 @@ def observe(doc: Document) -> Sample:
     seen: set[str] = set()
     for page in doc.pages:
         lines = [ln.strip() for ln in page.text.splitlines() if ln.strip()]
-        table_text = {c for t in page.tables for row in t.rows for c in row if c}
+        table_text = {_fold(c) for t in page.tables for row in t.rows for c in row if c}
+        table_text |= {_fold(" ".join(c for c in row if c)) for t in page.tables for row in t.rows}
         for i, line in enumerate(lines):
-            if len(line) > _MAX_LINE or line in table_text:
+            if len(line) > _MAX_LINE or _fold(line) in table_text:  # table rows are not label: value pairs
                 continue
             m = _LABEL_COLON.match(line) or _LABEL_SPACE.match(line)
             if not m:
@@ -296,7 +300,9 @@ def build_template(name: str, samples: list[Sample], *, description: str | None 
             by_label[key].append(o)
             display.setdefault(key, o.label)
 
-    used: set[str] = set()
+    custom = list(old.custom_fields) if old else []
+    excluded = set(old.excluded_fields) if old else set()
+    used: set[str] = {f.name for f in custom} | excluded  # learned names never shadow the user's
     fields: list[FieldSpec] = []
     stats: list[FieldStat] = []
     anchors: list[str] = []
@@ -359,9 +365,13 @@ def build_template(name: str, samples: list[Sample], *, description: str | None 
     anchors = list(dict.fromkeys(a for a in anchors if len(a.strip()) >= 2))
 
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    spec = Spec(fields=fields)
+    auto = old.auto_fields if old is not None else True
+    if not auto:
+        fields, stats = [], []
+    base = old.spec.fields if old is not None and old.manual_spec else fields
     if old is not None and old.manual_spec:
-        spec, stats = old.spec, old.field_stats
+        stats = old.field_stats
+    spec = Spec(fields=merge_fields(base, custom, excluded))
     return Template(
         name=name,
         description=description if description is not None else (old.description if old else None),
@@ -372,8 +382,51 @@ def build_template(name: str, samples: list[Sample], *, description: str | None 
         page_count_range=(min(s.page_count for s in samples), max(s.page_count for s in samples)),
         spec=spec,
         samples=samples,
-        field_stats=stats,
+        field_stats=[st for st in stats if st.name not in excluded],
+        custom_fields=custom,
+        excluded_fields=sorted(excluded),
+        auto_fields=auto,
     )
+
+
+def attach_anchor(field: FieldSpec, doc: Document, anchors: list[str]) -> FieldSpec:
+    """Tie a drawn box to the nearest fixed text (a label, header, heading).
+
+    Layouts flow: an extra table row pushes "Grand Total" down. Remembering
+    where the label was when the box was drawn lets extraction move the box by
+    the same amount on later documents.
+    """
+    r = field.region
+    page = next((p for p in doc.pages if p.number == r.page), None)
+    if page is None or not page.width or not page.height or not anchors:
+        return field
+    folded = sorted(((_fold(a), a) for a in anchors if len(_fold(a)) >= 2), key=lambda x: -len(x[0]))
+    best = None
+    for b in page.blocks:
+        bx0, btop = b.bbox.x0 / page.width, b.bbox.top / page.height
+        bx1, bbot = b.bbox.x1 / page.width, b.bbox.bottom / page.height
+        near = bx1 >= r.x0 - 0.35 and bx0 <= r.x1 and bbot >= r.top - 0.06 and btop <= r.bottom
+        if not near:
+            continue
+        text = _fold(b.text)
+        hit = next((orig for f, orig in folded if f in text), None)
+        if hit is None:
+            continue
+        dist = ((bx0 - r.x0) ** 2 + (btop - r.top) ** 2) ** 0.5
+        if best is None or dist < best[0]:
+            best = (dist, hit, bx0, btop)
+    if best is None:
+        return field
+    _, text, ax, ay = best
+    region = r.model_copy(update={"anchor": RegionAnchor(text=text, x0=round(ax, 4), top=round(ay, 4))})
+    return field.model_copy(update={"region": region})
+
+
+def merge_fields(learned: list[FieldSpec], custom: list[FieldSpec], excluded: set[str]) -> list[FieldSpec]:
+    """User-defined fields replace learned ones of the same name; removed names are dropped."""
+    custom_names = {f.name for f in custom}
+    out = [f for f in learned if f.name not in excluded and f.name not in custom_names]
+    return out + list(custom)
 
 
 # --------------------------------------------------------------------------- #
@@ -454,6 +507,45 @@ class TemplateStore:
         self.save(template)
         return template
 
+    def add_field(self, name: str, field: FieldSpec | dict, sample: Document | None = None) -> Template:
+        """Add or replace a user-defined field (e.g. a cropped region).
+
+        Creates the template from ``sample`` first when it does not exist yet,
+        so a user can start a template just by drawing boxes on one document.
+        """
+        f = field if isinstance(field, FieldSpec) else FieldSpec.model_validate(field)
+        if not self.exists(name):
+            if sample is None:
+                raise TemplateError(f"template {name!r} does not exist; a sample document is needed to create it")
+            self.learn(name, [sample])
+            created = self.load(name)
+            created.auto_fields = False  # started by hand: keep only the fields the user draws
+            self.save(build_template(name, created.samples, old=created))
+        t = self.load(name)
+        if f.region is not None and f.region.anchor is None and sample is not None:
+            f = attach_anchor(f, sample, t.anchors)
+        t.custom_fields = [c for c in t.custom_fields if c.name != f.name] + [f]
+        t.excluded_fields = [e for e in t.excluded_fields if e != f.name]
+        if sample is not None and sample.source.sha256 not in {s.sha256 for s in t.samples}:
+            t.samples.append(observe(sample))
+        rebuilt = build_template(name, t.samples, old=t)
+        self.save(rebuilt)
+        return rebuilt
+
+    def remove_field(self, name: str, field_name: str) -> Template:
+        t = self.load(name)
+        if field_name not in {f.name for f in t.spec.fields}:
+            raise TemplateError(f"template {name!r} has no field {field_name!r}")
+        if any(c.name == field_name for c in t.custom_fields):
+            t.custom_fields = [c for c in t.custom_fields if c.name != field_name]
+        else:  # a learned field: remember the removal so re-learning does not bring it back
+            t.excluded_fields = sorted(set(t.excluded_fields) | {field_name})
+        if t.manual_spec:
+            t.spec = Spec(fields=[f for f in t.spec.fields if f.name != field_name])
+        rebuilt = build_template(name, t.samples, old=t)
+        self.save(rebuilt)
+        return rebuilt
+
     def set_spec(self, name: str, spec: str | Path | dict | Spec) -> Template:
         """Replace the learned spec with a hand-edited one (kept on later learning)."""
         template = self.load(name)
@@ -491,7 +583,7 @@ def extract_auto(path: str | Path, store: TemplateStore, *, threshold: float = 0
         doc.warnings.append(f"no template matched (threshold {threshold})")
         return doc
     template, result = found
-    apply_spec(doc, template.spec)
+    apply_spec(doc, template.spec, pdf_path=path)
     doc.extraction.template = template.name
     doc.extraction.template_score = result.score
     return doc

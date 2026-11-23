@@ -124,3 +124,42 @@ def test_teach_match_apply_export(app, make_invoice):
     assert call("POST", f"/api/documents/{s['id']}/match")[1][0]["template"] == "acme"
     assert call("DELETE", "/api/templates/acme")[0] == 200
     assert call("GET", "/api/templates")[1] == []
+
+
+def test_crop_flow(app, make_invoice):
+    _, call, _ = app
+    a = make_invoice(21, "INV-9", "05/05/2026", "Crop Co", [["Q", "1", "1.00", "1.00"]], "1.00")
+    b = make_invoice(22, "INV-10", "06/05/2026", "Other Co", [["R", "2", "2.00", "4.00"]], "4.00")
+    doc_id = upload(call, a, auto=0)[1]["id"]
+    doc = call("GET", f"/api/documents/{doc_id}")[1]["document"]
+    page = doc["pages"][0]
+    blk = next(x for x in page["blocks"] if "Crop Co" in x["text"])
+    region = {
+        "page": 1,
+        "x0": blk["bbox"]["x0"] / page["width"] - 0.005,
+        "top": blk["bbox"]["top"] / page["height"] - 0.003,
+        "x1": blk["bbox"]["x1"] / page["width"] + 0.005,
+        "bottom": blk["bbox"]["bottom"] / page["height"] + 0.003,
+    }
+
+    status, prev, _ = call("POST", f"/api/documents/{doc_id}/region-preview", {"region": region, "type": "string"})
+    assert status == 200 and prev["found"] and prev["value"] == "Crop Co"
+    bad = {**region, "x1": region["x0"]}
+    assert call("POST", f"/api/documents/{doc_id}/region-preview", {"region": bad})[0] == 400
+
+    status, t, _ = call(
+        "POST", "/api/templates/crop_tpl/fields", {"field": {"name": "buyer", "region": region}, "doc_id": doc_id}
+    )
+    assert status == 201 and t["custom_fields"] == ["buyer"]
+    s = call("POST", f"/api/documents/{doc_id}/apply", {"template": "crop_tpl"})[1]
+    assert s["template"] == "crop_tpl"
+    detail = call("GET", f"/api/documents/{doc_id}")[1]["document"]
+    assert detail["fields"]["buyer"]["value"] == "Crop Co" and detail["fields"]["buyer"]["bbox"]
+
+    # a second invoice of the same layout is recognised and read from the box
+    s2 = upload(call, b)[1]
+    assert s2["template"] == "crop_tpl"
+    assert call("GET", f"/api/documents/{s2['id']}")[1]["document"]["fields"]["buyer"]["value"] == "Other Co"
+
+    assert call("DELETE", "/api/templates/crop_tpl/fields/buyer")[1]["custom_fields"] == []
+    assert call("DELETE", "/api/templates/crop_tpl/fields/buyer")[0] == 400

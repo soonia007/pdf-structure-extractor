@@ -10,7 +10,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-SCHEMA_VERSION = "1.2.0"
+SCHEMA_VERSION = "1.3.0"
 
 BlockType = Literal["heading", "paragraph", "list_item", "header", "footer"]
 Status = Literal["ok", "partial", "failed"]
@@ -103,6 +103,7 @@ class FieldValue(BaseModel):
     raw: str | None = Field(default=None, description="text the value was parsed from")
     page: int | None = None
     method: str | None = Field(default=None, description="how it was located, e.g. label:same-line, regex, table")
+    bbox: BBox | None = Field(default=None, description="where on the page the value was read (region fields)")
     error: str | None = None
 
 
