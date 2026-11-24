@@ -18,5 +18,9 @@ class ExtractionTimeout(PDFStructError):
     pass
 
 
+class ExtractionCancelled(PDFStructError):
+    """The caller asked to stop."""
+
+
 class SpecError(PDFStructError):
     """The field spec file is invalid."""

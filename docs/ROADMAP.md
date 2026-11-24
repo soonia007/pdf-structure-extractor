@@ -27,23 +27,27 @@
 - [x] header/footer จากข้อความซ้ำในขอบบน/ล่าง
 - [x] ตาราง (แบบมีเส้น) และไม่ซ้ำข้อความตารางใน blocks
 - [x] รูปภาพ (ตำแหน่ง, ขนาด px)
-- [ ] เอกสารหลายคอลัมน์ (column detection → reading order ที่ถูกต้อง)
-- [ ] ตารางไม่มีเส้น (text-alignment strategy), merged cells
+- [x] แยกบรรทัดเป็นชิ้น (segment) ตามช่องว่าง และไม่รวมข้อความคอลัมน์ซ้าย/ขวาเป็นบล็อกเดียว
+- [x] ตารางไม่มีเส้น (จัดแนวตามหัวตาราง หยุดที่บรรทัดยอดรวม)
+- [x] ตารางที่ต่อหน้าถัดไปโดยไม่มีหัวตาราง
+- [ ] merged cells
 - [ ] อ่าน Tagged PDF structure tree ถ้ามี (แม่นกว่า heuristic)
 - [ ] สร้าง tree ของ section (heading → children) นอกเหนือจาก flat list
 - [ ] Caption ของรูป/ตาราง
 
 **เกณฑ์ผ่าน:** ความแม่นของ heading/table ≥ 90% บน corpus ทดสอบ (วัดด้วย F1)
 
-## Phase 3 — Scanned PDF & ภาษาไทย ⏳
+## Phase 3 — Scanned PDF & ภาษาไทย 🚧 (OCR ใช้งานได้แล้ว)
 
 เป้าหมาย: อ่านเอกสารสแกนและ PDF ไทยที่ฟอนต์เสียได้
 
-- [ ] OCR หน้า `needs_ocr = true` ด้วย Tesseract `tha+eng` (render ผ่าน pypdfium2 ที่ 300 DPI)
-- [ ] เก็บ `confidence` ต่อคำ/บล็อกจาก OCR และ `engine: "ocr"`
+- [x] OCR หน้า `needs_ocr = true` ด้วย Tesseract `tha+eng` (render ผ่าน pypdfium2 ที่ 300 DPI) — [OCR.md](OCR.md)
+- [x] เก็บ `ocr_confidence` ต่อหน้า และ `engine: "ocr"`; ความมั่นใจของตัวแปรลดตาม OCR
+- [x] ต่อสระ/วรรณยุกต์ไทยที่ OCR แยกออกมาให้เป็นคำเดียว
+- [x] รวม Tesseract + ภาษาไทยในแอป Windows
 - [ ] Pre-processing ภาพ: deskew, denoise, binarize
 - [ ] Map Thai PUA (U+F700–U+F71A) → Unicode, reorder วรรณยุกต์/สระ
-- [ ] Auto-switch เป็น OCR เมื่ออัตราตัวอักษรเสียเกินเกณฑ์
+- [x] Auto-switch เป็น OCR เมื่อตัวอักษรเพี้ยนเกิน 30%
 - [ ] (optional) PyThaiNLP สำหรับตัดคำ
 
 **เกณฑ์ผ่าน:** CER ภาษาไทย ≤ 5% บนชุดเอกสารสแกนตัวอย่าง
@@ -59,9 +63,13 @@
 - [x] `required` / `default` / `pattern` / `pages` / `all` และบันทึกที่มาของทุกค่า (`raw`, `page`, `method`)
 - [x] `include` เลือกส่วนของโครงสร้างที่จะส่งออก
 - [x] Output `fields` แยกจากชั้น layout (ชั้น layout ยัง deterministic เสมอ)
+- [x] **Template learning**: เรียนรู้ spec จาก PDF ตัวอย่าง, แยกตัวแปรออกจากข้อความคงที่, เรียนรู้เพิ่มทีละไฟล์ ([TEMPLATES.md](TEMPLATES.md))
+- [x] จำเอกสารใหม่ด้วย anchors แล้วใช้ template ที่ตรงที่สุด (`--auto-template`)
+- [ ] เรียนรู้จากการแก้ค่าของผู้ใช้ในแอป (feedback loop) → ปรับ label/pattern อัตโนมัติ
 - [ ] ตรวจสอบค่าข้ามตัวแปร: ยอดรวมตรงกับผลรวมรายการ, checksum เลขผู้เสียภาษี 13 หลัก
-- [ ] หาค่าตามตำแหน่ง (ขวา/ใต้ป้ายในพิกัด bbox) สำหรับฟอร์มที่ป้ายกับค่าอยู่คนละบรรทัดหรือคนละคอลัมน์
-- [ ] ตารางรายการที่ต่อหลายหน้าโดยไม่มีหัวตารางซ้ำ
+- [x] หาค่าตามตำแหน่ง (ขวา/ใต้ป้าย) และให้คะแนนการจับคู่ป้าย; เรียนรู้ `position` และ `confidence`
+- [x] แยกป้าย/ค่าจากข้อความที่คงที่ข้ามตัวอย่าง (ใช้กับเอกสารสแกนได้)
+- [x] ตารางรายการที่ต่อหลายหน้าโดยไม่มีหัวตารางซ้ำ
 - [ ] (optional) Vision-LLM fallback พร้อมอ้างอิง bbox ที่มาของทุกค่า
 
 **เกณฑ์ผ่าน:** field accuracy ≥ 95% ต่อ template ที่รองรับ
@@ -70,6 +78,9 @@
 
 เป้าหมาย: ใช้งานจริงในระบบ ปริมาณมาก เสถียร ตรวจสอบได้
 
+- [x] แอปบนเครื่องตามดีไซน์ใน [APP_DESIGN.md](APP_DESIGN.md): อัปโหลด, ดูผลบนหน้า PDF, สอน template, คลัง template ([DESKTOP_APP.md](DESKTOP_APP.md))
+- [x] Build แอป Windows / macOS / Linux ด้วย PyInstaller ใน GitHub Actions
+- [ ] Code signing (Windows Authenticode, Apple notarization) เพื่อไม่ให้ระบบเตือนตอนเปิดแอป
 - [ ] REST API (FastAPI) + job queue สำหรับไฟล์ใหญ่
 - [ ] Batch แบบขนาน (process pool) + จำกัด memory/เวลา ต่อไฟล์
 - [ ] Regression corpus + golden JSON, diff ใน CI ทุก PR

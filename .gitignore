@@ -7,3 +7,7 @@ dist/
 .pytest_cache/
 .ruff_cache/
 /out/
+/templates/
+/dist/
+/build/
+*.spec

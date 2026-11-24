@@ -12,6 +12,8 @@ from collections import Counter
 from dataclasses import dataclass, field
 
 _LIST_RE = re.compile(r"^\s*(?:[\ufffd•●▪–—\-\*•▪◦]|\(?\d{1,3}[.)]|\(?[a-zA-Zก-ฮ][.)])\s+")
+_THAI_END = re.compile(r"[\u0e00-\u0e7f]$")
+_THAI_START = re.compile(r"[\u0e00-\u0e7f]")
 _BOLD_RE = re.compile(r"bold|black|heavy|semibold|demi", re.I)
 
 
@@ -59,7 +61,12 @@ class Line:
         out: list[str] = []
         prev: Word | None = None
         for w in self.words:
-            if prev is not None and w.x0 - prev.x1 > 0.15 * max(w.size, 1):
+            gap = w.x0 - prev.x1 if prev is not None else 0
+            # OCR splits Thai (written without spaces) into pieces: glue them back unless the gap is a real space
+            thai_join = (
+                prev is not None and w.font == "ocr" and _THAI_END.search(prev.text) and _THAI_START.match(w.text)
+            )
+            if prev is not None and gap > (0.45 if thai_join else 0.15) * max(w.size, 1):
                 out.append(" ")
             out.append(w.text)
             prev = w
@@ -119,18 +126,60 @@ def group_lines(words: list[Word]) -> list[Line]:
     return lines
 
 
+def split_segments(line: Line) -> list[Line]:
+    """Split a visual line where the horizontal gap is wide (columns, label ... value, table cells).
+
+    Ordinary word spacing is ~0.25-0.35 em; a gap of more than 1.5 em almost
+    always separates different pieces of information.
+    """
+    limit = max(1.5 * line.size, 8.0)
+    segments = [Line([line.words[0]])]
+    for prev, w in zip(line.words, line.words[1:], strict=False):
+        if w.x0 - prev.x1 > limit:
+            segments.append(Line([w]))
+        else:
+            segments[-1].words.append(w)
+    # a bullet or list number sits apart from its text but belongs to it
+    if len(segments) > 1 and len(segments[0].words) == 1 and _LIST_RE.match(segments[0].words[0].text + " x"):
+        segments[1].words[:0] = segments[0].words
+        segments.pop(0)
+    return segments
+
+
+def _overlaps(a: Line, b: Line, slack: float) -> bool:
+    return a.x0 <= b.x1 + slack and b.x0 <= a.x1 + slack
+
+
 def group_blocks(lines: list[Line]) -> list[RawBlock]:
+    """Group line pieces into blocks, column by column.
+
+    Pieces stack into the same block only when they are vertically adjacent,
+    horizontally overlapping and in the same style, so text in a left and a
+    right column (or label | value pairs) is not merged together.
+    """
     blocks: list[RawBlock] = []
+    open_blocks: list[RawBlock] = []
     for ln in lines:
-        if blocks:
-            prev = blocks[-1].lines[-1]
-            gap = ln.top - prev.bottom
-            same_style = abs(ln.size - prev.size) < 0.6 and ln.font == prev.font
-            starts_list = bool(_LIST_RE.match(ln.text))
-            if gap <= prev.size * 0.8 and same_style and not starts_list:
-                blocks[-1].lines.append(ln)
-                continue
-        blocks.append(RawBlock([ln]))
+        for piece in split_segments(ln):
+            target = None
+            starts_list = bool(_LIST_RE.match(piece.text))
+            for blk in reversed(open_blocks):
+                prev = blk.lines[-1]
+                gap = piece.top - prev.bottom
+                if gap > prev.size * 0.8 or gap < -prev.size * 0.3:
+                    continue
+                same_style = abs(piece.size - prev.size) < 0.6 and piece.font == prev.font
+                if same_style and not starts_list and _overlaps(piece, prev, prev.size):
+                    target = blk
+                    break
+            if target is None:
+                target = RawBlock([piece])
+                blocks.append(target)
+                open_blocks.append(target)
+            else:
+                target.lines.append(piece)
+        # blocks whose last line is far above can no longer grow
+        open_blocks = [b for b in open_blocks if ln.bottom - b.lines[-1].bottom <= b.lines[-1].size * 2.5]
     return blocks
 
 

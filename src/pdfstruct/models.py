@@ -10,7 +10,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-SCHEMA_VERSION = "1.1.0"
+SCHEMA_VERSION = "1.4.0"
 
 BlockType = Literal["heading", "paragraph", "list_item", "header", "footer"]
 Status = Literal["ok", "partial", "failed"]
@@ -38,9 +38,27 @@ class TextBlock(BaseModel):
     heading_level: int | None = Field(default=None, description="1 = largest heading")
 
 
+class Segment(BaseModel):
+    """A piece of a line separated from its neighbours by a wide gap (a cell, a label, a value)."""
+
+    text: str
+    bbox: BBox
+    bold: bool = False
+
+
+class TextLine(BaseModel):
+    text: str
+    bbox: BBox
+    segments: list[Segment] = []
+
+
 class Table(BaseModel):
     id: str
     bbox: BBox
+    strategy: Literal["lines", "text", "columns"] = Field(
+        default="lines",
+        description="lines: ruled cells; columns: ruled columns with rows taken from text lines; text: no lines",
+    )
     n_rows: int
     n_cols: int
     rows: list[list[str | None]]
@@ -74,7 +92,9 @@ class Page(BaseModel):
     text: str = ""
     char_count: int = 0
     needs_ocr: bool = Field(default=False, description="True if the page looks scanned / has no text layer")
+    ocr_confidence: float | None = Field(default=None, description="mean OCR word confidence (0..1) when engine is ocr")
     blocks: list[TextBlock] = []
+    lines: list[TextLine] = Field(default=[], description="visual lines split into segments at wide gaps")
     tables: list[Table] = []
     images: list[Image] = []
     links: list[Link] = []
@@ -103,6 +123,8 @@ class FieldValue(BaseModel):
     raw: str | None = Field(default=None, description="text the value was parsed from")
     page: int | None = None
     method: str | None = Field(default=None, description="how it was located, e.g. label:same-line, regex, table")
+    bbox: BBox | None = Field(default=None, description="where on the page the value was read")
+    confidence: float | None = Field(default=None, description="0..1, how sure the value belongs to this field")
     error: str | None = None
 
 
@@ -124,6 +146,8 @@ class Extraction(BaseModel):
     engines_used: list[str] = []
     pages_failed: list[int] = []
     missing_required_fields: list[str] = []
+    template: str | None = Field(default=None, description="template applied by --auto-template")
+    template_score: float | None = None
 
 
 class Document(BaseModel):

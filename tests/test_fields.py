@@ -49,7 +49,8 @@ def test_invoice_fields(invoice_pdf):
         {"name": "Widget A", "qty": 2, "unit_price": 100.0, "amount": 200.0},
         {"name": "Widget B", "qty": 3, "unit_price": 345.5, "amount": 1036.5},
     ]
-    assert doc.fields["customer"].method == "label:next-line"
+    assert doc.fields["customer"].method == "label:below"  # found by position, directly under its label
+    assert doc.fields["customer"].bbox is not None and doc.fields["customer"].confidence >= 0.8
     assert doc.fields["po_number"].found is False and v["po_number"] == "N/A"
     assert doc.extraction.missing_required_fields == []
 
@@ -157,3 +158,74 @@ def test_dates(raw, iso):
 )
 def test_numbers(raw, num):
     assert to_number(raw) == num
+
+
+# ---------------------------------------------------------------- region (crop)
+def _region_of(doc, text, pad=0.004):
+    """Region (fractions) around the block containing ``text`` — simulates a user's drawn box."""
+    for p in doc.pages:
+        for b in p.blocks:
+            if text in b.text:
+                return {
+                    "page": p.number,
+                    "x0": max(0, b.bbox.x0 / p.width - pad),
+                    "top": max(0, b.bbox.top / p.height - pad),
+                    "x1": min(1, b.bbox.x1 / p.width + pad),
+                    "bottom": min(1, b.bbox.bottom / p.height + pad),
+                }
+    raise AssertionError(text)
+
+
+def test_region_fields(invoice_pdf):
+    base = extract(invoice_pdf)
+    table = base.pages[0].tables[0].bbox
+    w, h = base.pages[0].width, base.pages[0].height
+    spec = {
+        "fields": [
+            {"name": "customer", "region": _region_of(base, "Somchai")},
+            {"name": "total", "type": "number", "region": _region_of(base, "Grand Total"), "pattern": r"[\d,]+\.\d{2}"},
+            {"name": "invoice_no", "region": _region_of(base, "Invoice No"), "pattern": r"INV-[\d-]+"},
+            {"name": "lines", "type": "table",
+             "region": {"page": 1, "x0": table.x0 / w - 0.01, "top": table.top / h - 0.01, "x1": table.x1 / w + 0.01,
+                        "bottom": table.bottom / h + 0.01}},
+            {"name": "nothing", "region": {"page": 1, "x0": 0.9, "top": 0.9, "x1": 0.99, "bottom": 0.99}},
+            {"name": "bad_page", "region": {"page": 5, "x0": 0.1, "top": 0.1, "x1": 0.2, "bottom": 0.2}},
+        ]
+    }  # fmt: skip
+    doc = extract(invoice_pdf, spec=spec)
+    f = doc.fields
+    assert f["customer"].value == "Somchai Trading Co., Ltd." and f["customer"].method == "region"
+    assert f["customer"].bbox is not None and f["customer"].page == 1
+    assert f["total"].value == 1236.5
+    assert f["invoice_no"].value == "INV-2026-001"
+    assert f["lines"].value[1] == {"item": "Widget B", "qty": "3", "unit_price": "345.50", "amount": "1,036.50"}
+    assert not f["nothing"].found and "empty" in f["nothing"].error
+    assert not f["bad_page"].found
+
+
+def test_region_needs_pdf(invoice_pdf):
+    from pdfstruct.fields import Spec, apply_spec
+
+    doc = extract(invoice_pdf)
+    spec = Spec.model_validate({"fields": [{"name": "c", "region": _region_of(doc, "Somchai")}]})
+    apply_spec(doc, spec)  # no pdf_path
+    assert not doc.fields["c"].found and "need the PDF" in doc.fields["c"].error
+
+
+@pytest.mark.parametrize(
+    "region",
+    [
+        {"page": 1, "x0": 0.5, "top": 0.1, "x1": 0.4, "bottom": 0.2},  # inverted
+        {"page": 0, "x0": 0.1, "top": 0.1, "x1": 0.2, "bottom": 0.2},  # page 0
+        {"page": 1, "x0": 0.1, "top": 0.1, "x1": 1.5, "bottom": 0.2},  # outside page
+    ],
+)
+def test_invalid_regions(region):
+    with pytest.raises(SpecError):
+        load_spec({"fields": [{"name": "x", "region": region}]})
+
+
+def test_region_fields_on_encrypted_pdf(encrypted_pdf):
+    spec = {"fields": [{"name": "top", "region": {"page": 1, "x0": 0.05, "top": 0.05, "x1": 0.95, "bottom": 0.2}}]}
+    doc = extract(encrypted_pdf, password="secret", spec=spec)
+    assert doc.fields["top"].found  # the PDF is re-opened with the same password

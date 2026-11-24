@@ -15,16 +15,26 @@ dependencies = [
     "pypdfium2>=4.0",
     "pydantic>=2.5",
     "pyyaml>=6.0",
+    "pillow>=10",
+    "openpyxl>=3.1",
 ]
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "reportlab>=4", "jsonschema>=4", "ruff>=0.5"]
+app = ["pywebview>=5"]
+build = ["pywebview>=5", "pyinstaller>=6"]
 
 [project.scripts]
 pdfstruct = "pdfstruct.cli:main"
 
+[project.gui-scripts]
+pdfstruct-app = "pdfstruct.app.desktop:main"
+
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"pdfstruct.app" = ["static/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -36,3 +46,6 @@ target-version = "py310"
 [tool.ruff.lint]
 # Broad `except Exception` is deliberate: parser failures must be isolated, not propagated.
 select = ["E", "F", "W", "I", "UP", "B", "C4"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/corpus.py" = ["C408"]  # dict(...) keeps the test documents readable

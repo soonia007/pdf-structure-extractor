@@ -144,3 +144,45 @@ def thai_invoice_pdf(tmp_path_factory) -> Path:
         [["สินค้า ก", "1", "500.00"], ["สินค้า ข", "4", "125.25"]],
         "ยอดรวมทั้งสิ้น 1,001.00 บาท",
     )
+
+
+@pytest.fixture(scope="session")
+def make_invoice(tmp_path_factory):
+    """Factory for invoices of one 'supplier layout' with different values."""
+    out = tmp_path_factory.mktemp("invoices")
+
+    def make(i: int, no: str, date: str, customer: str, rows: list[list[str]], total: str) -> Path:
+        return _invoice(
+            out / f"inv{i}.pdf",
+            "Helvetica",
+            ["INVOICE", f"Invoice No: {no}", f"Date: {date}", "Tax ID: 0105556123456", "Customer:", customer,
+             "Seller: ACME Co."],
+            ["Item", "Qty", "Unit Price", "Amount"],
+            rows,
+            f"Grand Total: {total} THB",
+        )  # fmt: skip
+
+    return make
+
+
+@pytest.fixture(scope="session")
+def make_thai_invoice(tmp_path_factory):
+    if not THAI_FONT.exists():
+        pytest.skip("Thai-capable font not installed")
+    from reportlab.pdfbase import pdfmetrics
+    from reportlab.pdfbase.ttfonts import TTFont
+
+    pdfmetrics.registerFont(TTFont("ThaiFont", str(THAI_FONT)))
+    out = tmp_path_factory.mktemp("thai_invoices")
+
+    def make(i: int, no: str, date: str, rows: list[list[str]], total: str) -> Path:
+        return _invoice(
+            out / f"th{i}.pdf",
+            "ThaiFont",
+            ["ใบกำกับภาษี", f"เลขที่: {no}", f"วันที่ {date}", "เลขประจำตัวผู้เสียภาษี 0105556123456"],
+            ["รายการ", "จำนวน", "ราคา"],
+            rows,
+            f"ยอดรวมทั้งสิ้น {total} บาท",
+        )
+
+    return make

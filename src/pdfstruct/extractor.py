@@ -19,6 +19,7 @@ import hashlib
 import io
 import logging
 import multiprocessing as mp
+import re
 import time
 from collections import Counter
 from datetime import datetime, timezone
@@ -27,7 +28,9 @@ from typing import Any
 
 from . import __version__, errors
 from .errors import EncryptedPDFError, ExtractionTimeout, NotAPDFError, UnreadablePDFError
+from .kv import find_text_tables
 from .layout import (
+    Line,
     Word,
     body_font_size,
     classify,
@@ -35,6 +38,7 @@ from .layout import (
     group_blocks,
     group_lines,
     heading_levels,
+    split_segments,
 )
 from .models import (
     Annotation,
@@ -46,9 +50,11 @@ from .models import (
     Link,
     OutlineItem,
     Page,
+    Segment,
     Source,
     Table,
     TextBlock,
+    TextLine,
 )
 from .normalize import count_private_use, count_unmapped, normalize_text
 
@@ -222,10 +228,78 @@ def _inside(word: dict, boxes: list[tuple[float, float, float, float]]) -> bool:
     return any(x0 <= cx <= x1 and t <= cy <= b for x0, t, x1, b in boxes)
 
 
+_NUMBER_CELL = re.compile(r"^[(\-+]?[\d๐-๙][\d๐-๙,]*(?:\.\d+)?\)?$")
+
+
+def _join_header(cell: str | None) -> str | None:
+    """Two-line header cells: "เวลา/\nวันที่มีผล" -> "เวลา/วันที่มีผล", "ยอดคงเหลือ\n(บาท)" -> "ยอดคงเหลือ (บาท)"."""
+    if cell is None:
+        return None
+    out = ""
+    for part in (p.strip() for p in cell.split("\n") if p.strip()):
+        out = part if not out else out + ("" if out.endswith(("/", "-")) else " ") + part
+    return out
+
+
+def _rows_from_text_lines(t: Any, rows: list, raw_words: list) -> list | None:
+    """Ruled tables with column lines but no lines between rows (bank statements, reports).
+
+    pdfplumber then returns one giant row whose cells hold many text lines.
+    Here the columns come from the ruling lines and the rows from the text
+    lines: every word goes to the column it sits in. A line with nothing in
+    the first column and no numbers continues the row above (wrapped text).
+    Returns None when the table does not look like that.
+    """
+    body = rows[1:] if len(rows) > 1 else rows
+    tallest = max((c.count("\n") + 1 for r in body for c in r if c), default=1)
+    if tallest < 3:
+        return None
+    columns = [c.bbox for c in t.columns]
+    if len(columns) < 2:
+        return None
+    x0, top, x1, bottom = t.bbox
+    body_top = t.rows[0].bbox[3] if len(rows) > 1 else top
+    words = []
+    for w in raw_words:
+        cy = (w["top"] + w["bottom"]) / 2
+        # a word belongs to the table if it starts inside it (long text may run past the right edge)
+        if x0 - 1 <= w["x0"] < x1 and body_top <= cy <= bottom and w["text"].strip():
+            words.append(
+                Word(
+                    text=normalize_text(w["text"]), x0=w["x0"], top=w["top"], x1=w["x1"], bottom=w["bottom"],
+                    font=w.get("fontname"), size=float(w.get("size") or 0),
+                )
+            )  # fmt: skip
+
+    def column_of(w: Word) -> int:
+        cx = (w.x0 + w.x1) / 2
+        for i, (cx0, _, cx1, _) in enumerate(columns):
+            if cx0 <= cx <= cx1:
+                return i
+        return min(range(len(columns)), key=lambda i: abs(cx - (columns[i][0] + columns[i][2]) / 2))
+
+    out: list[list[str | None]] = []
+    for line in group_lines(words):
+        parts: list[list[Word]] = [[] for _ in columns]
+        for w in line.words:
+            parts[column_of(w)].append(w)
+        cells = [normalize_text(Line(ws).text) or None if ws else None for ws in parts]
+        numeric = any(c and _NUMBER_CELL.match(c) for c in cells)
+        if out and not cells[0] and not numeric:  # wrapped text of the row above
+            out[-1] = [a if not b else (b if not a else f"{a} {b}") for a, b in zip(out[-1], cells, strict=True)]
+        else:
+            out.append(cells)
+    if len(out) < 2:
+        return None
+    header = [_join_header(c) for c in rows[0]] if len(rows) > 1 else None
+    return [header, *out] if header else out
+
+
 def _page_with_pdfplumber(pl_page: Any, number: int, with_tables: bool) -> tuple[Page, list]:
     warnings: list[str] = []
     tables: list[Table] = []
     table_boxes: list[tuple[float, float, float, float]] = []
+    raw_words = pl_page.extract_words(extra_attrs=["fontname", "size"], keep_blank_chars=False)
     if with_tables:
         try:
             for t in pl_page.find_tables():
@@ -233,11 +307,16 @@ def _page_with_pdfplumber(pl_page: Any, number: int, with_tables: bool) -> tuple
                 n_cols = max((len(r) for r in rows), default=0)
                 if len(rows) < 1 or n_cols < 2:
                     continue
+                strategy = "lines"
+                split = _rows_from_text_lines(t, rows, raw_words)
+                if split is not None:
+                    rows, strategy = split, "columns"
                 table_boxes.append(t.bbox)
                 tables.append(
                     Table(
                         id=f"p{number}-t{len(tables) + 1}",
                         bbox=BBox.of(*t.bbox),
+                        strategy=strategy,
                         n_rows=len(rows),
                         n_cols=n_cols,
                         rows=rows,
@@ -246,7 +325,6 @@ def _page_with_pdfplumber(pl_page: Any, number: int, with_tables: bool) -> tuple
         except Exception as exc:
             warnings.append(f"tables: {_short(exc)}")
 
-    raw_words = pl_page.extract_words(extra_attrs=["fontname", "size"], keep_blank_chars=False)
     words = [
         Word(
             text=normalize_text(w["text"]),
@@ -260,7 +338,24 @@ def _page_with_pdfplumber(pl_page: Any, number: int, with_tables: bool) -> tuple
         for w in raw_words
         if not _inside(w, table_boxes) and w["text"].strip()
     ]
-    raw_blocks = group_blocks(group_lines(words))
+    visual_lines = group_lines(words)
+    raw_blocks = group_blocks(visual_lines)
+    text_lines = to_text_lines(visual_lines)
+    if with_tables:
+        try:
+            for rows, box in find_text_tables(text_lines, table_boxes):
+                tables.append(
+                    Table(
+                        id=f"p{number}-t{len(tables) + 1}",
+                        bbox=BBox.of(*box),
+                        strategy="text",
+                        n_rows=len(rows),
+                        n_cols=len(rows[0]),
+                        rows=rows,
+                    )
+                )
+        except Exception as exc:
+            warnings.append(f"text tables: {_short(exc)}")
 
     images: list[Image] = []
     for img in pl_page.images:
@@ -288,9 +383,30 @@ def _page_with_pdfplumber(pl_page: Any, number: int, with_tables: bool) -> tuple
         char_count=len(text.replace("\n", "").replace(" ", "")),
         tables=tables,
         images=images,
+        lines=text_lines,
         warnings=warnings,
     )
     return page, raw_blocks
+
+
+def to_text_lines(lines: list) -> list[TextLine]:
+    out = []
+    for ln in lines:
+        segs = [
+            Segment(
+                text=sg.text,
+                bbox=BBox.of(sg.x0, sg.top, sg.x1, sg.bottom),
+                bold=bool(sg.font and _BOLD.search(sg.font)),
+            )
+            for sg in split_segments(ln)
+        ]
+        out.append(
+            TextLine(text="  ".join(s.text for s in segs), bbox=BBox.of(ln.x0, ln.top, ln.x1, ln.bottom), segments=segs)
+        )
+    return out
+
+
+_BOLD = re.compile(r"bold|black|heavy|semibold|demi", re.IGNORECASE)
 
 
 def _page_with_pdfium(pdfium_doc: Any, index: int) -> Page:
@@ -386,12 +502,52 @@ def _finalise_blocks(pages: list[Page], raw: dict[int, list]) -> None:
         ]
 
 
+def _garbled(page: Page) -> bool:
+    """Most characters unreadable: the font has no Unicode map (common in Thai PDFs) -> OCR reads it better."""
+    n = len(page.text.replace("\n", "").replace(" ", ""))
+    bad = count_private_use(page.text) + count_unmapped(page.text)
+    return n >= 20 and bad / n > 0.3
+
+
+def _apply_ocr(page: Page, pdfium_doc: Any, index: int) -> list | None:
+    """Replace a page's text with OCR output. Returns the raw blocks, or None if OCR is not possible."""
+    from . import ocr as ocr_mod
+
+    if not ocr_mod.available():
+        if page.needs_ocr:
+            page.warnings.append("install Tesseract OCR (with Thai) to read scanned pages - see docs/OCR.md")
+        return None
+    pdf_page = pdfium_doc[index]
+    try:
+        result = ocr_mod.ocr_page(pdf_page)
+    except Exception as exc:
+        page.warnings.append(f"OCR failed: {_short(exc)}")
+        return None
+    finally:
+        pdf_page.close()
+    if not result.words:
+        page.warnings.append("OCR found no text on this page")
+        return None
+    visual_lines = group_lines(result.words)
+    page.lines = to_text_lines(visual_lines)
+    page.text = normalize_text("\n".join(ln.text for ln in page.lines))
+    page.char_count = len(page.text.replace("\n", "").replace(" ", ""))
+    page.engine = "ocr"
+    page.ocr_confidence = result.confidence
+    page.needs_ocr = False
+    page.warnings = [
+        w for w in page.warnings if "OCR needed" not in w and "Unicode" not in w and "private-use" not in w
+    ]
+    page.warnings.append(f"text read by OCR ({result.languages}), mean word confidence {result.confidence:.0%}")
+    return group_blocks(visual_lines)
+
+
 def _flag_ocr(page: Page) -> None:
     area = max(page.width * page.height, 1.0)
     img_area = sum((i.bbox.x1 - i.bbox.x0) * (i.bbox.bottom - i.bbox.top) for i in page.images)
     if page.char_count < OCR_CHAR_THRESHOLD and (page.char_count == 0 or img_area / area > 0.3):
         page.needs_ocr = True
-        page.warnings.append("page has little or no text layer; OCR needed (see roadmap phase 3)")
+        page.warnings.append("page has little or no text layer (scanned image?); OCR needed")
     pua = count_private_use(page.text)
     if pua:
         page.warnings.append(f"{pua} private-use characters: font has no usable ToUnicode map, text may be garbled")
@@ -409,13 +565,24 @@ def extract(
     password: str | None = None,
     tables: bool = True,
     max_pages: int | None = None,
+    ocr: str = "auto",
     spec: Any = None,
+    progress: Any = None,
 ) -> Document:
     """Extract the structure of a PDF into a :class:`Document`.
 
     ``spec`` (path to a YAML/JSON file, a dict or a :class:`pdfstruct.fields.Spec`)
     lists the variables to pull out into ``Document.fields``.
+
+    ``progress(stage, done, total)`` is called as work advances (stage is
+    "open", "page", "ocr" or "fields"); it may raise ``ExtractionCancelled``
+    to stop early.
     """
+
+    def report(stage: str, done: int, total: int) -> None:
+        if progress is not None:
+            progress(stage, done, total)
+
     from .fields import apply_spec, load_spec
 
     loaded_spec = load_spec(spec) if spec is not None else None  # fail fast on a bad spec
@@ -457,9 +624,11 @@ def extract(
     pages: list[Page] = []
     raw_blocks: dict[int, list] = {}
     failed: list[int] = []
+    report("open", 0, n_pages)
     try:
         for i in range(n_pages):
             number = i + 1
+            report("page", i, n_pages)
             page: Page | None = None
             errors: list[str] = []
             if pl_doc and i < len(pl_doc.pages):
@@ -489,7 +658,15 @@ def extract(
                 links, annots = info.links_and_annotations(i, page.warnings)
                 page.links, page.annotations = links, annots
                 _flag_ocr(page)
+                if ocr != "off" and pdfium_doc is not None and i < len(pdfium_doc):
+                    if ocr == "force" or page.needs_ocr or _garbled(page):
+                        report("ocr", i, n_pages)
+                        blocks = _apply_ocr(page, pdfium_doc, i)
+                        if blocks is not None:
+                            raw_blocks[number] = blocks
+                            engines.add("ocr")
             pages.append(page)
+        report("page", n_pages, n_pages)
     finally:
         if pl_doc:
             pl_doc.close()
@@ -523,14 +700,17 @@ def extract(
         ),
     )
     if loaded_spec is not None:
-        apply_spec(doc, loaded_spec)
+        apply_spec(doc, loaded_spec, pdf_path=path, password=password)
         doc.extraction.duration_ms = int((time.monotonic() - t0) * 1000)
     return doc
 
 
 def _worker(path: str, kwargs: dict, conn: Any) -> None:
+    def progress(stage: str, done: int, total: int) -> None:
+        conn.send(("progress", stage, done, total))
+
     try:
-        conn.send(("ok", extract(path, **kwargs).model_dump_json()))
+        conn.send(("ok", extract(path, progress=progress, **kwargs).model_dump_json()))
     except errors.PDFStructError as exc:
         conn.send(("error", type(exc).__name__, str(exc)))
     except BaseException as exc:  # report anything, never leave the parent waiting
@@ -539,12 +719,24 @@ def _worker(path: str, kwargs: dict, conn: Any) -> None:
         conn.close()
 
 
-def extract_isolated(path: str | Path, *, timeout: float = 120.0, **kwargs: Any) -> Document:
-    """Run :func:`extract` in a separate process with a hard timeout.
+def extract_isolated(
+    path: str | Path,
+    *,
+    timeout: float = 120.0,
+    progress: Any = None,
+    cancel: Any = None,
+    **kwargs: Any,
+) -> Document:
+    """Run :func:`extract` in a separate process.
 
     Use this for untrusted / unknown PDFs: a parser hang, crash, segfault or
-    memory blow-up only kills the child process. Raises ``ExtractionTimeout``
-    on timeout and ``UnreadablePDFError`` if the child dies without a result.
+    memory blow-up only kills the child process.
+
+    ``timeout`` is the longest time without progress (not the total time), so
+    a long document that keeps advancing page by page is never cut off.
+    ``progress(stage, done, total)`` receives the child's progress, and setting
+    ``cancel`` (a ``threading.Event``) stops the child. Raises
+    ``ExtractionTimeout``, ``ExtractionCancelled`` or ``UnreadablePDFError``.
     """
     ctx = mp.get_context("spawn")
     recv, send = ctx.Pipe(duplex=False)
@@ -552,13 +744,25 @@ def extract_isolated(path: str | Path, *, timeout: float = 120.0, **kwargs: Any)
     proc.start()
     send.close()  # the parent only reads; EOF now means "child is gone"
     try:
-        if not recv.poll(timeout):
-            raise ExtractionTimeout(f"extraction exceeded {timeout}s")
-        try:
-            msg = recv.recv()
-        except EOFError:
-            proc.join(5)
-            raise UnreadablePDFError(f"worker process died without a result (exit code {proc.exitcode})") from None
+        deadline = time.monotonic() + timeout
+        while True:
+            if cancel is not None and cancel.is_set():
+                raise errors.ExtractionCancelled("cancelled")
+            wait = min(0.25, max(deadline - time.monotonic(), 0))
+            if not recv.poll(wait):
+                if time.monotonic() >= deadline:
+                    raise ExtractionTimeout(f"no progress for {timeout:g}s")
+                continue
+            try:
+                msg = recv.recv()
+            except EOFError:
+                proc.join(5)
+                raise UnreadablePDFError(f"worker process died without a result (exit code {proc.exitcode})") from None
+            if msg[0] != "progress":
+                break
+            deadline = time.monotonic() + timeout  # still making progress: keep waiting
+            if progress is not None:
+                progress(*msg[1:])
     finally:
         if proc.is_alive():
             proc.kill()
