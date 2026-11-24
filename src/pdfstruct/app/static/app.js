@@ -71,6 +71,8 @@ const pct = (x) => Math.round(x * 100) + '%';
 const fold = (s) => String(s || '').replace(/\s+/g, '').toLowerCase();
 
 function statusOf(s) {
+  if (s.state === 'queued' || s.state === 'reading') return ['run', s.progress ? s.progress.text : 'กำลังอ่าน'];
+  if (s.state === 'cancelled') return ['bad', 'ยกเลิกแล้ว'];
   if (s.locked) return ['warn', 'ล็อกด้วยรหัสผ่าน'];
   if (s.error) return ['bad', 'อ่านไม่ได้'];
   if (s.status === 'failed') return ['bad', 'อ่านไม่ได้'];
@@ -189,19 +191,19 @@ async function renderHome() {
     for (const f of files) pending.push(f.name);
     await refresh();
     try {
-      let res = await uploadFiles([...files], auto);
-      toast(`อ่านเสร็จ ${res.length} ไฟล์`);
-      const locked = res.filter((r) => r.locked);
-      if (locked.length) {
-        pending.length = 0; await refresh();
-        const opened = await unlockDialog(locked, auto);
-        res = res.map((r) => opened.find((o) => o.id === r.id) || r);
-      }
-      if (res.length === 1 && !res[0].error) location.hash = '#/doc/' + res[0].id;
+      const res = await uploadFiles([...files], auto);  // returns at once: reading happens in the background
+      kickActivity();
+      toast(res.length === 1 ? `เพิ่ม ${res[0].filename} เข้าคิวแล้ว` : `เพิ่ม ${res.length} ไฟล์เข้าคิวแล้ว ดูความคืบหน้าได้ที่แผงงานมุมขวาล่าง`);
+      if (res.length === 1) location.hash = '#/doc/' + res[0].id;
     } catch (e) { toast('อัปโหลดไม่สำเร็จ: ' + e.message); }
     pending.length = 0;
     await refresh();
   }
+  let lastSig = '';
+  onActivity((act) => {  // redraw the table only when something changed
+    const sig = act.documents.map((d) => d.id + d.state + d.progress.text).join('|');
+    if (sig !== lastSig) { lastSig = sig; refresh(); }
+  });
   fileInput.addEventListener('change', () => handle(fileInput.files));
   drop.addEventListener('dragover', (e) => { e.preventDefault(); drop.classList.add('over'); });
   drop.addEventListener('dragleave', () => drop.classList.remove('over'));
@@ -209,9 +211,9 @@ async function renderHome() {
 
   async function refresh() {
     const [docs, tpls] = await Promise.all([api('GET', '/documents'), api('GET', '/templates')]);
-    const readable = docs.filter((d) => !d.error);
+    const readable = docs.filter((d) => d.state === 'done');
     const matched = readable.filter((d) => d.template).length;
-    const review = docs.filter((d) => statusOf(d)[0] !== 'ok').length;
+    const review = docs.filter((d) => !['ok', 'run'].includes(statusOf(d)[0])).length;
     put(statsBox, 
       h('div', { class: 'card stat' }, h('span', { class: 'muted small' }, 'เอกสารในรอบนี้'), h('b', {}, docs.length)),
       h('div', { class: 'card stat' }, h('span', { class: 'muted small' }, 'จับคู่ Template ได้'), h('b', {}, readable.length ? pct(matched / readable.length) : '–')),
@@ -223,12 +225,17 @@ async function renderHome() {
         h('td', {}, h('span', { class: 'status run' }, h('span', { class: 'spin', 'aria-hidden': 'true' }), ' กำลังอ่าน…')), h('td', {}))),
       ...docs.map((d) => h('tr', {},
         h('td', {}, h('div', { style: 'font-weight:600' }, d.filename),
-          h('div', { class: 'muted small' }, d.locked ? 'ไฟล์มีรหัสผ่าน กด "ใส่รหัสผ่าน" เพื่อเปิด' : d.error ? d.error.message : `${d.page_count} หน้า · ${fmtSize(d.size_bytes)}${d.encrypted ? ' · ปลดล็อกแล้ว' : ''}`)),
+          ['queued', 'reading'].includes(d.state) ? h('div', { class: 'bar', style: 'margin:4px 0;max-width:260px' }, h('i', { style: `width:${d.progress.percent}%` })) : null,
+          h('div', { class: 'muted small' }, ['queued', 'reading'].includes(d.state) ? d.progress.text : d.state === 'cancelled' ? 'ยกเลิกแล้ว กด "อ่านใหม่" เพื่อเริ่มอีกครั้ง' : d.locked ? 'ไฟล์มีรหัสผ่าน กด "ใส่รหัสผ่าน" เพื่อเปิด' : d.error ? d.error.message : `${d.page_count} หน้า · ${fmtSize(d.size_bytes)}${d.encrypted ? ' · ปลดล็อกแล้ว' : ''}`)),
         h('td', {}, d.template ? h('span', { class: 'pill accent' }, `${d.template} · ${pct(d.template_score || 0)}`) : h('span', { class: 'pill' }, d.error ? '–' : 'ไม่ตรง Template')),
         h('td', {}, d.fields_total ? `${d.fields_found} / ${d.fields_total}` : '–'),
         h('td', {}, statusEl(d)),
         h('td', { style: 'text-align:right' },
-          d.locked ? h('span', { class: 'row', style: 'gap:6px;justify-content:flex-end' },
+          ['queued', 'reading'].includes(d.state) ? h('button', { class: 'btn sm', type: 'button', onclick: async () => { await api('POST', `/documents/${d.id}/cancel`); kickActivity(); refresh(); } }, 'ยกเลิก')
+          : d.state === 'cancelled' || (d.error && !d.locked) ? h('span', { class: 'row', style: 'gap:6px;justify-content:flex-end' },
+            h('button', { class: 'btn sm', type: 'button', onclick: async () => { await api('POST', `/documents/${d.id}/retry`); kickActivity(); refresh(); } }, 'อ่านใหม่'),
+            h('button', { class: 'btn sm danger', type: 'button', onclick: async () => { await api('DELETE', '/documents/' + d.id); refresh(); } }, 'ลบ'))
+          : d.locked ? h('span', { class: 'row', style: 'gap:6px;justify-content:flex-end' },
             h('button', { class: 'btn sm primary', type: 'button', onclick: async () => {
               const opened = await unlockDialog(docs.filter((x) => x.locked), auto);
               if (opened.length === 1) location.hash = '#/doc/' + opened[0].id; else refresh();
@@ -412,13 +419,33 @@ async function exportDialog(id, filename) {
 async function renderViewer(id, startPage = 1) {
   const data = await api('GET', '/documents/' + id);
   const s = data.summary, doc = data.document;
+  if (!doc && (s.state === 'queued' || s.state === 'reading')) {
+    const bar = h('i', { style: `width:${s.progress.percent}%` });
+    const text = h('div', { class: 'muted' }, s.progress.text);
+    put(view, h('a', { href: '#/', class: 'btn', style: 'align-self:flex-start' }, icon(I.back), 'กลับ'),
+      h('h1', { style: 'margin:0' }, s.filename),
+      h('section', { class: 'card card-pad stack', 'aria-live': 'polite' },
+        h('div', { class: 'row' }, h('span', { class: 'spin', 'aria-hidden': 'true' }), h('b', {}, 'กำลังอ่านเอกสาร'), text),
+        h('div', { class: 'bar', role: 'progressbar', 'aria-label': 'ความคืบหน้า' }, bar),
+        h('div', { class: 'small muted' }, 'ไฟล์ใหญ่หรือไฟล์สแกนอาจใช้เวลาหลายนาที ระหว่างนี้เปลี่ยนไปหน้าอื่นได้ งานจะทำต่อเบื้องหลัง'),
+        h('div', { class: 'row' }, h('button', { class: 'btn', type: 'button', onclick: async () => { await api('POST', `/documents/${id}/cancel`); kickActivity(); } }, 'ยกเลิก'))));
+    onActivity((act) => {
+      const d = act.documents.find((x) => x.id === id);
+      if (!d) return;
+      if (d.state === 'queued' || d.state === 'reading') { bar.style.width = `${d.progress.percent}%`; text.textContent = d.progress.text; }
+      else renderViewer(id, startPage);
+    });
+    kickActivity();
+    return;
+  }
   if (!doc && s.locked) {
     const opened = await unlockDialog([s]);
     if (opened.length) return renderViewer(id, startPage);
   }
   if (!doc) {
     put(view, h('a', { href: '#/', class: 'btn', style: 'align-self:flex-start' }, icon(I.back), 'กลับ'),
-      h('h1', { style: 'margin:0' }, s.filename), h('div', { class: 'note bad' }, `${s.error.error}: ${s.error.message}`));
+      h('h1', { style: 'margin:0' }, s.filename), h('div', { class: 'note bad' }, s.state === 'cancelled' ? 'ยกเลิกการอ่านแล้ว' : `${s.error.error}: ${s.error.message}`),
+      s.locked ? null : h('button', { class: 'btn', type: 'button', style: 'align-self:flex-start', onclick: async () => { await api('POST', `/documents/${id}/retry`); kickActivity(); renderViewer(id); } }, 'อ่านใหม่'));
     return;
   }
   const st = { page: Math.min(startPage, Math.max(1, data.document ? data.document.pages.length : 1)), tab: 'fields',
@@ -698,7 +725,9 @@ async function renderViewer(id, startPage = 1) {
 // ------------------------------------------------------------------ teach
 async function renderTeach(query) {
   const pre = query.get('doc');
-  const docs = (await api('GET', '/documents')).filter((d) => !d.error);
+  const openJob = query.get('job');
+  const usable = (d) => !d.error && d.state !== 'cancelled';
+  let docs = (await api('GET', '/documents')).filter(usable);
   const existing = (await api('GET', '/templates')).map((t) => t.name);
   const chosen = new Set(pre ? [pre] : []);
   const nameIn = h('input', { class: 'input', id: 'tname', value: '', placeholder: 'เช่น acme_invoice', style: 'width:100%;max-width:360px' });
@@ -706,7 +735,7 @@ async function renderTeach(query) {
   const nameHint = h('div', { class: 'small muted', 'aria-live': 'polite' });
   const counter = h('div', { class: 'small muted' });
   const samplesBox = h('div', { class: 'stack' });
-  const stepsBox = h('section', { class: 'card card-pad stack', 'aria-label': 'ความคืบหน้าการเรียนรู้' });
+  const jobsBox = h('section', { class: 'card card-pad stack', 'aria-label': 'งานสอน Template' });
   const resultBox = h('div', { class: 'stack' });
   const startBtn = h('button', { class: 'btn primary', type: 'button' }, 'เริ่มเรียนรู้');
   const more = h('input', { type: 'file', id: 'more', accept: 'application/pdf,.pdf', multiple: true, class: 'file-input' });
@@ -721,32 +750,97 @@ async function renderTeach(query) {
   }
   nameIn.addEventListener('input', validate);
 
+  // Rows are kept and only their status text changes, so live updates never steal a click or the keyboard focus.
+  const rows = new Map();
+  const listBox = h('div', { class: 'stack', style: 'gap:6px' });
+  const emptyNote = h('div', { class: 'muted small' }, 'ยังไม่มีเอกสาร เพิ่มไฟล์ตัวอย่างด้านล่าง (ใส่ได้หลายไฟล์พร้อมกัน)');
+  put(samplesBox, listBox,
+    h('label', { for: 'more', class: 'btn', style: 'border-style:dashed;color:var(--accent)' }, '+ เพิ่มไฟล์ตัวอย่าง'), more, counter);
+  function sampleStatus(d) {
+    return ['queued', 'reading'].includes(d.state) ? [d.progress.text, 'small status run'] : [`${d.page_count} หน้า`, 'muted small'];
+  }
   function drawSamples() {
-    put(samplesBox, 
-      docs.length ? docs.map((d) => h('label', { class: 'sample' },
-        h('input', { type: 'checkbox', checked: chosen.has(d.id), style: 'width:18px;height:18px;accent-color:#1F4FC9',
-          onchange: (e) => { e.target.checked ? chosen.add(d.id) : chosen.delete(d.id); validate(); } }),
-        h('span', { class: 'grow', style: 'min-width:0;word-break:break-all' }, d.filename),
-        h('span', { class: 'muted small' }, `${d.page_count} หน้า`)))
-        : h('div', { class: 'muted small' }, 'ยังไม่มีเอกสาร เพิ่มไฟล์ตัวอย่างด้านล่าง'),
-      h('label', { for: 'more', class: 'btn', style: 'border-style:dashed;color:var(--accent)' }, '+ เพิ่มไฟล์ตัวอย่าง'), more,
-      counter);
+    const ids = new Set(docs.map((d) => d.id));
+    for (const [id, r] of rows) if (!ids.has(id)) { r.row.remove(); rows.delete(id); }
+    docs.forEach((d, i) => {
+      let r = rows.get(d.id);
+      if (!r) {
+        const box = h('input', { type: 'checkbox', style: 'width:18px;height:18px;accent-color:#1F4FC9',
+          onchange: (e) => { e.target.checked ? chosen.add(d.id) : chosen.delete(d.id); validate(); } });
+        const status = h('span');
+        const row = h('label', { class: 'sample' }, box,
+          h('span', { class: 'grow', style: 'min-width:0;display:flex;flex-direction:column' },
+            h('span', { style: 'word-break:break-all' }, d.filename), status));
+        r = { row, box, status };
+        rows.set(d.id, r);
+      }
+      const [text, cls] = sampleStatus(d);
+      if (r.status.textContent !== text) r.status.textContent = text;
+      if (r.status.className !== cls) r.status.className = cls;
+      if (r.box.checked !== chosen.has(d.id)) r.box.checked = chosen.has(d.id);
+      if (listBox.children[i] !== r.row) listBox.insertBefore(r.row, listBox.children[i] || null);
+    });
+    if (!docs.length) put(listBox, emptyNote); else emptyNote.remove();
   }
   more.addEventListener('change', async () => {
     try {
       const res = await uploadFiles([...more.files], false);
-      const opened = await unlockDialog(res.filter((r) => r.locked), false).catch(() => []);
-      for (const r0 of res) {
-        const r = opened.find((o) => o.id === r0.id) || r0;
-        if (!r.error) { docs.unshift(r); chosen.add(r.id); } else toast(`${r.filename}: ${r.locked ? 'ยังไม่ได้ใส่รหัสผ่าน' : r.error.message}`);
-      }
+      for (const r of res) { docs.unshift(r); chosen.add(r.id); }
+      kickActivity();
+      toast(`เพิ่ม ${res.length} ไฟล์ตัวอย่างแล้ว กดเริ่มเรียนรู้ได้เลยไม่ต้องรออ่านเสร็จ`);
       drawSamples(); validate();
     } catch (e) { toast(e.message); }
+    more.value = '';
+  });
+  let lastSig = '';
+  onActivity(async (act) => {
+    const sig = act.documents.map((d) => d.id + d.state + d.progress.text).join('|');
+    if (sig !== lastSig) {
+      lastSig = sig;
+      docs = (await api('GET', '/documents')).filter(usable);
+      for (const id of [...chosen]) if (!docs.some((d) => d.id === id)) chosen.delete(id);  // failed files drop out
+      drawSamples(); validate();
+    }
+    drawJobs(act.jobs.filter((j) => j.kind === 'learn'));
   });
 
   const STEPS = ['อ่านไฟล์ตัวอย่าง', 'เทียบตัวอย่าง แยกตัวแปร / ข้อความคงที่', 'ทดสอบ Template กับตัวอย่าง'];
-  function drawSteps(job, n) {
-    // server steps: 0..n-1 reading, n comparing, n+1 testing, total = done
+  let shownJob = openJob;
+  function jobCard(job) {
+    const n = job.doc_count;
+    const phase = job.state === 'done' ? 3 : job.state === 'waiting' || job.state === 'queued' ? 0 : job.step <= n + 1 ? 1 : 2;
+    const failed = job.state === 'error' || job.state === 'cancelled';
+    return h('article', { class: 'fcard' + (failed ? ' missing' : '') },
+      h('div', { class: 'row', style: 'justify-content:space-between' },
+        h('div', {}, h('b', { class: 'mono' }, job.name), h('span', { class: 'small muted' }, ` · ${n} ตัวอย่าง · ${fmtElapsed(job.elapsed)}`)),
+        h('div', { class: 'row', style: 'gap:6px' },
+          !job.done ? h('button', { class: 'btn sm', type: 'button', onclick: async () => { await api('POST', `/jobs/${job.id}/cancel`); kickActivity(); } }, 'ยกเลิก') : null,
+          job.state === 'done' ? h('button', { class: 'btn sm primary', type: 'button', onclick: () => showResult(job.id) }, shownJob === job.id ? 'กำลังแสดงผล' : 'ดูผล') : null)),
+      failed ? h('div', { class: 'small', style: 'color:#7A1A12' }, job.error || job.message)
+        : h('ol', { class: 'steps' }, STEPS.map((label, i) => h('li', { class: phase > i ? 'done' : phase === i ? 'now' : '', 'aria-current': phase === i ? 'step' : null },
+          h('span', { class: 'dot' }, phase > i ? icon(I.check, 14, '#fff') : String(i + 1)),
+          h('span', {}, h('div', { class: 'lbl' }, label), h('div', { class: 'sub' }, phase === i ? job.message : phase > i ? 'เสร็จ' : 'รอ'))))),
+      job.done ? null : h('div', { class: 'bar' + (job.state === 'waiting' ? ' idle' : ''), role: 'progressbar', 'aria-label': `ความคืบหน้า ${job.name}`,
+        'aria-valuemin': '0', 'aria-valuemax': '100', 'aria-valuenow': String(job.percent) }, h('i', { style: `width:${job.percent}%` })));
+  }
+  function drawJobs(jobs) {
+    put(jobsBox,
+      h('div', { class: 'row', style: 'justify-content:space-between' },
+        h('h2', { class: 'h' }, 'งานสอน Template'),
+        h('span', { class: 'small muted' }, 'สอนได้หลาย Template พร้อมกัน และเริ่มได้ทันทีแม้ไฟล์ยังอ่านไม่เสร็จ')),
+      jobs.length ? [...jobs].reverse().map(jobCard) : h('div', { class: 'small muted' }, 'ยังไม่มีงาน เลือกไฟล์ตัวอย่าง ตั้งชื่อ แล้วกด "เริ่มเรียนรู้"'));
+  }
+  async function showResult(jobId) {
+    shownJob = jobId;
+    const job = await api('GET', `/jobs/${jobId}`);
+    if (job.result) {
+      drawResult(job.result);
+      if (job.result.skipped && job.result.skipped.length) toast(`ข้ามไฟล์ที่อ่านไม่ได้: ${job.result.skipped.join(', ')}`);
+    }
+    if (Activity.data) drawJobs(Activity.data.jobs.filter((j) => j.kind === 'learn'));
+  }
+  function drawSteps(job, n) {  // kept for a single job shown in the result area
+    const stepsBox = h('div');
     const phase = !job ? -1 : job.done && !job.error ? 3 : job.step < n ? 0 : job.step === n ? 1 : 2;
     put(stepsBox, 
       h('ol', { class: 'steps' }, STEPS.map((label, i) => h('li', { class: phase > i ? 'done' : phase === i ? 'now' : '', 'aria-current': phase === i ? 'step' : null },
@@ -790,16 +884,14 @@ async function renderTeach(query) {
   startBtn.addEventListener('click', async () => {
     const name = nameIn.value.trim();
     const ids = [...chosen];
-    startBtn.disabled = true; put(resultBox, );
+    startBtn.disabled = true;
     try {
-      const { job } = await api('POST', `/templates/${encodeURIComponent(name)}/learn`, { doc_ids: ids, description: descIn.value.trim() });
-      let state;
-      do {
-        await new Promise((r) => setTimeout(r, 250));
-        state = await api('GET', '/jobs/' + job);
-        drawSteps(state, ids.length);
-      } while (!state.done);
-      if (state.result) { drawResult(state.result); toast(`บันทึก Template "${name}" แล้ว`); if (!existing.includes(name)) existing.push(name); }
+      await api('POST', `/templates/${encodeURIComponent(name)}/learn`, { doc_ids: ids, description: descIn.value.trim() });
+      if (!existing.includes(name)) existing.push(name);
+      toast(`เริ่มสอน "${name}" แล้ว ดูความคืบหน้าด้านล่าง หรือเริ่มสอน Template อื่นต่อได้เลย`);
+      nameIn.value = ''; descIn.value = ''; chosen.clear();  // ready for the next template
+      drawSamples();
+      kickActivity();
     } catch (e) { toast(e.message); }
     validate();
   });
@@ -812,14 +904,17 @@ async function renderTeach(query) {
         h('div', { class: 'stack grow', style: 'gap:6px' }, h('label', { for: 'tname', class: 'lbl' }, 'ชื่อ Template'), nameIn, nameHint),
         h('div', { class: 'stack grow', style: 'gap:6px' }, h('label', { for: 'tdesc', class: 'lbl' }, 'คำอธิบาย (ไม่บังคับ)'), descIn)),
       h('div', { class: 'row' }, startBtn)),
-    stepsBox,
+    jobsBox,
     h('div', { class: 'split' },
       h('aside', { class: 'left' },
         h('section', { class: 'card card-pad stack' }, h('h2', { class: 'h' }, 'ไฟล์ตัวอย่าง'), samplesBox),
         h('div', { class: 'note ok row', style: 'flex-wrap:nowrap;align-items:flex-start' }, icon(I.lock),
           h('span', {}, 'Template เก็บเฉพาะชนิดข้อมูลและ hash ของค่า ไม่เก็บค่าจริงของเอกสาร'))),
       h('div', { class: 'right' }, resultBox)));
-  drawSamples(); drawSteps(null, 0); validate();
+  drawSamples(); validate();
+  drawJobs(Activity.data ? Activity.data.jobs.filter((j) => j.kind === 'learn') : []);
+  if (openJob) showResult(openJob).catch(() => {});
+  kickActivity();
 }
 
 // ------------------------------------------------------------------ templates
@@ -877,8 +972,149 @@ async function renderTemplates() {
       matchBox));
 }
 
+// ------------------------------------------------------------------ activity (live status of all work)
+const Activity = {
+  data: null,
+  timer: null,
+  listeners: new Set(),
+  states: new Map(), // id -> last known state, to notice what just finished
+  dismissed: new Set(),
+  open: store('dock') !== '0',
+  unlockOpen: false,
+};
+const viewListeners = new Set(); // removed when the user navigates away
+
+function onActivity(fn, forView = true) {
+  Activity.listeners.add(fn);
+  if (forView) viewListeners.add(fn);
+  return () => { Activity.listeners.delete(fn); viewListeners.delete(fn); };
+}
+
+function kickActivity() {
+  clearTimeout(Activity.timer);
+  Activity.timer = setTimeout(pollActivity, 150);
+}
+
+async function pollActivity() {
+  clearTimeout(Activity.timer);
+  let data = null;
+  try { data = await api('GET', '/activity'); } catch { /* keep the last view */ }
+  if (data) {
+    const newlyLocked = [];
+    for (const d of data.documents) {
+      const before = Activity.states.get(d.id);
+      if (before && before !== d.state) {
+        if (d.state === 'done') toast(`อ่านเสร็จ: ${d.filename}`);
+        if (d.locked) newlyLocked.push(d);
+      }
+      Activity.states.set(d.id, d.state);
+    }
+    for (const j of data.jobs) {
+      const before = Activity.states.get(j.id);
+      if (before !== undefined && before !== j.state) {
+        if (j.state === 'done') toast(`สอน Template "${j.name}" เสร็จแล้ว`);
+        if (j.state === 'error') toast(`สอน Template "${j.name}" ไม่สำเร็จ: ${j.error}`);
+      }
+      Activity.states.set(j.id, j.state);
+    }
+    Activity.data = data;
+    drawDock();
+    for (const fn of [...Activity.listeners]) { try { fn(data); } catch (e) { console.error(e); } }
+    if (newlyLocked.length) {
+      // do not pop a dialog over whatever the user is doing: say so, and offer the button in the panel
+      toast(`${newlyLocked.map((d) => d.filename).join(', ')} ต้องใช้รหัสผ่าน: กด "ใส่รหัส" ที่แผงงานมุมขวาล่าง`);
+      if (!Activity.open) { Activity.open = true; drawDock(); }
+    }
+  }
+  // poll quickly while anything is running; slowly otherwise
+  Activity.timer = setTimeout(pollActivity, data && data.active ? 700 : 5000);
+}
+
+async function promptUnlock() {
+  const docs = await api('GET', '/documents').catch(() => []);
+  const locked = docs.filter((d) => d.locked);
+  if (!locked.length) return;
+  Activity.unlockOpen = true;
+  try { await unlockDialog(locked); } finally { Activity.unlockOpen = false; kickActivity(); }
+}
+
+function fmtElapsed(sec) {
+  if (!sec) return '';
+  if (sec < 60) return `${Math.round(sec)} วิ`;
+  return `${Math.floor(sec / 60)} นาที ${Math.round(sec % 60)} วิ`;
+}
+
+function dockItem({ icon: ic, title, text, percent, state, elapsed, actions }) {
+  const cls = state === 'done' ? 'ok' : state === 'error' || state === 'cancelled' ? 'bad' : state === 'queued' || state === 'waiting' ? 'wait' : 'run';
+  return h('li', { class: 'dock-item ' + cls },
+    h('div', { class: 'row', style: 'gap:8px;flex-wrap:nowrap;align-items:flex-start' },
+      h('span', { class: 'dock-ic', 'aria-hidden': 'true' }, ic),
+      h('div', { class: 'grow', style: 'min-width:0' },
+        h('div', { class: 'dock-title' }, title),
+        h('div', { class: 'small muted' }, text, elapsed ? ` · ${fmtElapsed(elapsed)}` : '')),
+      h('span', { class: 'row', style: 'gap:4px;flex-wrap:nowrap' }, actions)),
+    state === 'done' || state === 'error' || state === 'cancelled' ? null
+      : h('div', { class: 'bar' + (state === 'queued' || state === 'waiting' ? ' idle' : ''), role: 'progressbar', 'aria-valuemin': '0', 'aria-valuemax': '100', 'aria-valuenow': String(percent || 0), 'aria-label': title },
+        h('i', { style: `width:${Math.max(percent || 0, state === 'queued' ? 0 : 3)}%` })));
+}
+
+function smallBtn(label, onclick, extra = {}) {
+  return h('button', { class: 'btn sm', type: 'button', style: 'min-height:30px;padding:0 8px', onclick, ...extra }, label);
+}
+
+function drawDock() {
+  let dock = document.getElementById('dock');
+  if (!dock) {
+    dock = h('aside', { id: 'dock', class: 'dock', 'aria-label': 'งานที่กำลังทำ' });
+    document.body.append(dock);
+  }
+  const data = Activity.data;
+  if (!data) return;
+  const docs = data.documents.filter((d) => !Activity.dismissed.has(d.id));
+  const jobs = data.jobs.filter((j) => !Activity.dismissed.has(j.id));
+  if (!docs.length && !jobs.length) { put(dock); dock.hidden = true; return; }
+  dock.hidden = false;
+  const running = docs.filter((d) => d.state === 'reading').length + jobs.filter((j) => !j.done && j.state !== 'waiting').length;
+  const waiting = docs.filter((d) => d.state === 'queued').length + jobs.filter((j) => j.state === 'waiting').length;
+  const finished = docs.filter((d) => !['queued', 'reading'].includes(d.state)).length + jobs.filter((j) => j.done).length;
+  const summary = running || waiting ? `กำลังทำ ${running} · รอ ${waiting}` + (finished ? ` · เสร็จ ${finished}` : '') : `เสร็จทั้งหมด ${finished} งาน`;
+  const order = { reading: 0, learning: 0, waiting: 1, queued: 1, error: 2, cancelled: 3, done: 4 };
+  const items = [
+    ...jobs.map((j) => ({ sort: order[j.state] ?? 2, t: j.created_at, el: dockItem({
+      icon: '★', title: `สอน Template: ${j.name}`, text: j.state === 'done' ? `เสร็จ · ${j.doc_count} ตัวอย่าง` : j.message,
+      percent: j.percent, state: j.state, elapsed: j.elapsed,
+      actions: [
+        !j.done ? smallBtn('ยกเลิก', async () => { await api('POST', `/jobs/${j.id}/cancel`); kickActivity(); }, { 'aria-label': `ยกเลิกการสอน ${j.name}` }) : null,
+        j.state === 'done' ? h('a', { class: 'btn sm', style: 'min-height:30px;padding:0 8px', href: `#/teach?job=${j.id}` }, 'ดูผล') : null,
+      ] }) })),
+    ...docs.map((d) => ({ sort: order[d.state] ?? 2, t: d.added_at, el: dockItem({
+      icon: d.state === 'done' ? '✓' : d.locked ? '🔒' : '▤', title: d.filename, text: d.progress.text,
+      percent: d.progress.percent, state: d.state, elapsed: d.progress.elapsed,
+      actions: [
+        ['queued', 'reading'].includes(d.state) ? smallBtn('ยกเลิก', async () => { await api('POST', `/documents/${d.id}/cancel`); kickActivity(); }, { 'aria-label': `ยกเลิก ${d.filename}` }) : null,
+        d.state === 'done' ? h('a', { class: 'btn sm', style: 'min-height:30px;padding:0 8px', href: `#/doc/${d.id}` }, 'เปิด') : null,
+        d.locked ? smallBtn('ใส่รหัส', () => promptUnlock(), { class: 'btn sm primary' }) : null,
+        (d.state === 'error' && !d.locked) || d.state === 'cancelled' ? smallBtn('อ่านใหม่', async () => { await api('POST', `/documents/${d.id}/retry`); kickActivity(); }) : null,
+      ] }) })),
+  ].sort((a, b) => a.sort - b.sort || a.t - b.t);
+  put(dock,
+    h('div', { class: 'dock-head' },
+      h('button', { class: 'dock-toggle', type: 'button', 'aria-expanded': String(Activity.open), onclick: () => { Activity.open = !Activity.open; store('dock', Activity.open ? '1' : '0'); drawDock(); } },
+        running || waiting ? h('span', { class: 'spin', 'aria-hidden': 'true' }) : h('span', { 'aria-hidden': 'true' }, '✓'),
+        h('b', {}, 'งานที่กำลังทำ'), h('span', { class: 'small muted' }, summary),
+        h('span', { class: 'grow' }), h('span', { 'aria-hidden': 'true' }, Activity.open ? '▾' : '▴')),
+      finished ? smallBtn('ล้างที่เสร็จ', () => {
+        for (const d of docs) if (!['queued', 'reading'].includes(d.state) && !d.locked) Activity.dismissed.add(d.id);
+        for (const j of jobs) if (j.done) Activity.dismissed.add(j.id);
+        drawDock();
+      }) : null),
+    Activity.open ? h('ul', { class: 'dock-list', 'aria-live': 'polite' }, items.map((x) => x.el)) : null,
+    Activity.open && data.workers ? h('div', { class: 'small muted', style: 'padding:6px 12px 10px' }, `อ่านพร้อมกันได้ ${data.workers} ไฟล์ · งานที่เหลือทำต่อเบื้องหลัง เปลี่ยนหน้าได้ตามสบาย`) : null);
+}
+
 // ------------------------------------------------------------------ router
 async function route() {
+  for (const fn of [...viewListeners]) { Activity.listeners.delete(fn); viewListeners.delete(fn); }
   const raw = location.hash.replace(/^#/, '') || '/';
   const [path, qs] = raw.split('?');
   const query = new URLSearchParams(qs || '');
@@ -895,6 +1131,7 @@ async function route() {
   view.focus({ preventScroll: true });
 }
 window.addEventListener('hashchange', route);
+pollActivity();
 let APP_INFO = null;
 api('GET', '/info').then((i) => {
   APP_INFO = i;

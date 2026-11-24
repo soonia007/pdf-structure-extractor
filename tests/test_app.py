@@ -38,7 +38,7 @@ def app(tmp_path):
 
 
 def upload(call, path, auto=1):
-    return call("POST", f"/api/documents?auto_template={auto}", path.read_bytes(), {"X-Filename": path.name})
+    return call("POST", f"/api/documents?auto_template={auto}&wait=1", path.read_bytes(), {"X-Filename": path.name})
 
 
 def test_auth_and_host_checks(app):
@@ -75,7 +75,7 @@ def test_document_flow(app, sample_pdf):
 
 def test_bad_upload_is_reported_not_fatal(app):
     _, call, _ = app
-    status, summary, _ = call("POST", "/api/documents", b"not a pdf", {"X-Filename": "x.pdf"})
+    status, summary, _ = call("POST", "/api/documents?wait=1", b"not a pdf", {"X-Filename": "x.pdf"})
     assert status == 201 and summary["error"]["error"] == "NotAPDFError"
     assert call("GET", "/api/info")[0] == 200  # server still alive
 
@@ -203,7 +203,7 @@ def test_locked_pdf_can_be_unlocked(app, encrypted_pdf):
     assert call("POST", f"/api/documents/{doc_id}/unlock", {"password": ""})[0] == 403
     assert call("GET", "/api/documents")[1][0]["locked"]  # still locked
 
-    status, s, _ = call("POST", f"/api/documents/{doc_id}/unlock", {"password": "secret"})
+    status, s, _ = call("POST", f"/api/documents/{doc_id}/unlock", {"password": "secret", "wait": True})
     assert status == 200 and not s["locked"] and s["encrypted"] and s["page_count"] == 2
     assert "password" not in json.dumps(call("GET", f"/api/documents/{doc_id}")[1])  # never sent back
     assert call("POST", f"/api/documents/{doc_id}/unlock", {"password": "secret"})[0] == 400  # not locked anymore

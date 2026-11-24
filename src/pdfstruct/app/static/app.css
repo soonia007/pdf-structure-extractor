@@ -158,3 +158,19 @@ dialog.wide textarea { min-height: 300px; }
 .tv { max-height: 68vh; overflow: auto; border: 1px solid var(--line); border-radius: 10px; }
 .tv thead th { position: sticky; top: 0; background: var(--soft); z-index: 1; }
 .tabs button { white-space: nowrap; }
+
+/* activity dock */
+.dock { position: fixed; right: 16px; bottom: 16px; width: min(420px, calc(100vw - 32px)); max-height: 60vh; display: flex; flex-direction: column;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 14px; box-shadow: 0 12px 40px rgba(16,24,40,.18); z-index: 50; overflow: hidden; }
+.dock[hidden] { display: none; }
+.dock-head { display: flex; align-items: center; gap: 6px; padding: 6px 8px 6px 4px; border-bottom: 1px solid var(--line); }
+.dock-toggle { flex: 1; display: flex; align-items: center; gap: 8px; min-height: 40px; padding: 0 8px; border: 0; background: transparent; cursor: pointer; text-align: left; }
+.dock-list { list-style: none; margin: 0; padding: 6px 8px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; }
+.dock-item { padding: 8px 10px; border-radius: 10px; background: var(--soft); display: flex; flex-direction: column; gap: 6px; }
+.dock-item.ok { background: var(--ok-soft); }
+.dock-item.bad { background: var(--bad-soft); }
+.dock-ic { width: 20px; text-align: center; }
+.dock-title { font-weight: 600; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bar.idle > i { background: var(--accent-dim); }
+@media (max-width: 820px) { .dock { right: 8px; bottom: 8px; width: calc(100vw - 16px); } }
+.main { padding-bottom: 140px; }

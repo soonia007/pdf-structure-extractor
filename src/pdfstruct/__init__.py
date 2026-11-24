@@ -5,6 +5,7 @@ __version__ = "0.1.0"
 from . import ocr
 from .errors import (
     EncryptedPDFError,
+    ExtractionCancelled,
     ExtractionTimeout,
     NotAPDFError,
     PDFStructError,
@@ -20,6 +21,7 @@ __all__ = [
     "ocr",
     "Document",
     "EncryptedPDFError",
+    "ExtractionCancelled",
     "ExtractionTimeout",
     "NotAPDFError",
     "PDFStructError",

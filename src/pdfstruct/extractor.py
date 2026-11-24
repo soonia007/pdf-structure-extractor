@@ -567,12 +567,22 @@ def extract(
     max_pages: int | None = None,
     ocr: str = "auto",
     spec: Any = None,
+    progress: Any = None,
 ) -> Document:
     """Extract the structure of a PDF into a :class:`Document`.
 
     ``spec`` (path to a YAML/JSON file, a dict or a :class:`pdfstruct.fields.Spec`)
     lists the variables to pull out into ``Document.fields``.
+
+    ``progress(stage, done, total)`` is called as work advances (stage is
+    "open", "page", "ocr" or "fields"); it may raise ``ExtractionCancelled``
+    to stop early.
     """
+
+    def report(stage: str, done: int, total: int) -> None:
+        if progress is not None:
+            progress(stage, done, total)
+
     from .fields import apply_spec, load_spec
 
     loaded_spec = load_spec(spec) if spec is not None else None  # fail fast on a bad spec
@@ -614,9 +624,11 @@ def extract(
     pages: list[Page] = []
     raw_blocks: dict[int, list] = {}
     failed: list[int] = []
+    report("open", 0, n_pages)
     try:
         for i in range(n_pages):
             number = i + 1
+            report("page", i, n_pages)
             page: Page | None = None
             errors: list[str] = []
             if pl_doc and i < len(pl_doc.pages):
@@ -648,11 +660,13 @@ def extract(
                 _flag_ocr(page)
                 if ocr != "off" and pdfium_doc is not None and i < len(pdfium_doc):
                     if ocr == "force" or page.needs_ocr or _garbled(page):
+                        report("ocr", i, n_pages)
                         blocks = _apply_ocr(page, pdfium_doc, i)
                         if blocks is not None:
                             raw_blocks[number] = blocks
                             engines.add("ocr")
             pages.append(page)
+        report("page", n_pages, n_pages)
     finally:
         if pl_doc:
             pl_doc.close()
@@ -692,8 +706,11 @@ def extract(
 
 
 def _worker(path: str, kwargs: dict, conn: Any) -> None:
+    def progress(stage: str, done: int, total: int) -> None:
+        conn.send(("progress", stage, done, total))
+
     try:
-        conn.send(("ok", extract(path, **kwargs).model_dump_json()))
+        conn.send(("ok", extract(path, progress=progress, **kwargs).model_dump_json()))
     except errors.PDFStructError as exc:
         conn.send(("error", type(exc).__name__, str(exc)))
     except BaseException as exc:  # report anything, never leave the parent waiting
@@ -702,12 +719,24 @@ def _worker(path: str, kwargs: dict, conn: Any) -> None:
         conn.close()
 
 
-def extract_isolated(path: str | Path, *, timeout: float = 120.0, **kwargs: Any) -> Document:
-    """Run :func:`extract` in a separate process with a hard timeout.
+def extract_isolated(
+    path: str | Path,
+    *,
+    timeout: float = 120.0,
+    progress: Any = None,
+    cancel: Any = None,
+    **kwargs: Any,
+) -> Document:
+    """Run :func:`extract` in a separate process.
 
     Use this for untrusted / unknown PDFs: a parser hang, crash, segfault or
-    memory blow-up only kills the child process. Raises ``ExtractionTimeout``
-    on timeout and ``UnreadablePDFError`` if the child dies without a result.
+    memory blow-up only kills the child process.
+
+    ``timeout`` is the longest time without progress (not the total time), so
+    a long document that keeps advancing page by page is never cut off.
+    ``progress(stage, done, total)`` receives the child's progress, and setting
+    ``cancel`` (a ``threading.Event``) stops the child. Raises
+    ``ExtractionTimeout``, ``ExtractionCancelled`` or ``UnreadablePDFError``.
     """
     ctx = mp.get_context("spawn")
     recv, send = ctx.Pipe(duplex=False)
@@ -715,13 +744,25 @@ def extract_isolated(path: str | Path, *, timeout: float = 120.0, **kwargs: Any)
     proc.start()
     send.close()  # the parent only reads; EOF now means "child is gone"
     try:
-        if not recv.poll(timeout):
-            raise ExtractionTimeout(f"extraction exceeded {timeout}s")
-        try:
-            msg = recv.recv()
-        except EOFError:
-            proc.join(5)
-            raise UnreadablePDFError(f"worker process died without a result (exit code {proc.exitcode})") from None
+        deadline = time.monotonic() + timeout
+        while True:
+            if cancel is not None and cancel.is_set():
+                raise errors.ExtractionCancelled("cancelled")
+            wait = min(0.25, max(deadline - time.monotonic(), 0))
+            if not recv.poll(wait):
+                if time.monotonic() >= deadline:
+                    raise ExtractionTimeout(f"no progress for {timeout:g}s")
+                continue
+            try:
+                msg = recv.recv()
+            except EOFError:
+                proc.join(5)
+                raise UnreadablePDFError(f"worker process died without a result (exit code {proc.exitcode})") from None
+            if msg[0] != "progress":
+                break
+            deadline = time.monotonic() + timeout  # still making progress: keep waiting
+            if progress is not None:
+                progress(*msg[1:])
     finally:
         if proc.is_alive():
             proc.kill()

@@ -42,6 +42,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--port", type=int, default=0, help="local port (default: a free one)")
     p.add_argument("--store", type=Path, default=default_store(), help="template folder")
     p.add_argument("--no-isolate", action="store_true", help="read PDFs in-process (faster, less safe)")
+    p.add_argument("--workers", type=int, default=3, help="how many PDFs are read at the same time (default 3)")
     p.add_argument("--version", action="version", version=f"pdfstruct {__version__}")
     p.add_argument("--ocr-check", metavar="FILE", help="write OCR status as JSON to FILE and exit (1 if not ready)")
     args = p.parse_args(argv)
@@ -57,7 +58,7 @@ def main(argv: list[str] | None = None) -> int:
 
     from .server import AppState, make_server
 
-    state = AppState(args.store, isolate=not args.no_isolate)
+    state = AppState(args.store, isolate=not args.no_isolate, workers=args.workers)
     server = make_server(state, args.port)
     port = server.server_address[1]
     url = f"http://127.0.0.1:{port}/?token={state.token}"
